@@ -1,10 +1,11 @@
 """
-🤖 MEMECOIN SNIPER BOT v2.0
+🤖 MEMECOIN SNIPER BOT v2.1
 Améliorations :
 - Score minimum abaissé à 5
 - Whale tracker avec vrais wallets
 - Alertes spéciales baleines
 - Stats toutes les heures
+- ⚠️ FILTRE STRICT SOLANA (rejette EVM)
 - Meilleure gestion des erreurs
 """
 
@@ -26,7 +27,7 @@ from config.settings import (
 
 class MemeSniper:
     def __init__(self):
-        logger.info("🚀 Démarrage du Bot v2.0...")
+        logger.info("🚀 Démarrage du Bot v2.1...")
 
         self.analyzer = TokenAnalyzer()
         self.pumpfun = PumpFunMonitor()
@@ -36,17 +37,19 @@ class MemeSniper:
         self.analyzed_tokens = set()
         self.scan_count = 0
         self.alert_count = 0
+        self.rejected_evm = 0
         self.start_time = datetime.utcnow()
 
-        logger.info("✅ Bot v2.0 prêt !")
+        logger.info("✅ Bot v2.1 prêt !")
         self.alerter.send_simple_message(
-            f"🤖 *Bot Sniper v2.0 actif !*\n\n"
+            f"🤖 *Bot Sniper v2.1 actif !*\n\n"
             f"📊 Config :\n"
             f"   🎯 Score min alerte : {SCORE_MIN_ALERT}/10\n"
             f"   💧 Liquidité min : ${MIN_LIQUIDITY:,}\n"
             f"   ⏰ Scan : toutes les {SCAN_INTERVAL_SECONDS}s\n"
             f"   🐋 Wallets surveillés : "
-            f"{len(self.whales.known_whales)}\n\n"
+            f"{len(self.whales.known_whales)}\n"
+            f"   🔒 Filtre STRICT : Solana uniquement\n\n"
             f"🚀 *Chasse aux gems lancée !*"
         )
 
@@ -97,26 +100,59 @@ class MemeSniper:
         """Analyse complète d'un token"""
         self.analyzed_tokens.add(contract)
 
-        # Évite que le set grossisse trop
+        # ==========================================
+        # ⚠️ SÉCURITÉ CRITIQUE : FILTRE SOLANA
+        # ==========================================
+        
+        # Rejette les adresses Ethereum/Polygon/Base (EVM)
+        if contract.startswith("0x"):
+            self.rejected_evm += 1
+            logger.warning(
+                f"⛔ ${symbol} adresse EVM (non Solana) "
+                f"→ Ignoré : {contract[:20]}..."
+            )
+            return
+        
+        # Rejette les formats invalides
+        if len(contract) < 32 or len(contract) > 44:
+            logger.warning(
+                f"⛔ ${symbol} format contract invalide "
+                f"→ Ignoré : {contract[:20]}..."
+            )
+            return
+
+        # ==========================================
+        # NETTOYAGE MÉMOIRE
+        # ==========================================
         if len(self.analyzed_tokens) > 5000:
             self.analyzed_tokens = set(
                 list(self.analyzed_tokens)[-2000:]
             )
 
-        logger.info(f"📊 Analyse ${symbol} ({contract[:8]}...)")
+        logger.info(
+            f"📊 Analyse ${symbol} ({contract[:8]}...)"
+        )
 
-        # 1. Analyse marché + sécurité
+        # ==========================================
+        # 1. ANALYSE MARCHÉ + SÉCURITÉ
+        # ==========================================
         token_data = self.analyzer.analyze_token(contract)
         if not token_data:
             logger.info(f"❌ ${symbol} pas de données")
             return
 
-        # 2. Filtre honeypot
+        # ==========================================
+        # 2. FILTRE HONEYPOT
+        # ==========================================
         if token_data.get("is_honeypot") is True:
-            logger.warning(f"⛔ ${symbol} HONEYPOT → Ignoré")
+            logger.warning(
+                f"⛔ ${symbol} HONEYPOT → Ignoré"
+            )
             return
 
-        # 3. Filtre liquidité
+        # ==========================================
+        # 3. FILTRE LIQUIDITÉ MINIMUM
+        # ==========================================
         liquidity = token_data.get("liquidity_usd", 0)
         if liquidity < MIN_LIQUIDITY:
             logger.info(
@@ -125,10 +161,36 @@ class MemeSniper:
             )
             return
 
-        # 4. Vérifie les baleines
+        # ==========================================
+        # 4. FILTRE ÂGE (rejette les tokens > 30 jours)
+        # ==========================================
+        age_hours = token_data.get("age_hours", 0)
+        if age_hours > 720:  # 30 jours
+            logger.info(
+                f"⚠️ ${symbol} trop ancien "
+                f"({age_hours:.0f}h) → Ignoré"
+            )
+            return
+
+        # ==========================================
+        # 5. FILTRE ACTIVITÉ (rejette les tokens morts)
+        # ==========================================
+        volume_1h = token_data.get("volume_1h", 0)
+        if volume_1h < 100:  # Moins de 100$ sur 1h = mort
+            logger.info(
+                f"⚠️ ${symbol} token inactif "
+                f"(vol 1h : ${volume_1h:.0f}) → Ignoré"
+            )
+            return
+
+        # ==========================================
+        # 6. VÉRIFIE LES BALEINES
+        # ==========================================
         whale_data = self.whales.check_whale_activity(contract)
 
-        # 5. Bonus baleine sur le score
+        # ==========================================
+        # 7. BONUS BALEINE SUR LE SCORE
+        # ==========================================
         score = token_data.get("score", 0)
         if whale_data.get("is_smart_money_signal"):
             bonus = whale_data.get("score_bonus", 0)
@@ -139,7 +201,9 @@ class MemeSniper:
                 f"Score: {score}/10"
             )
 
-        # 6. Compile toutes les données
+        # ==========================================
+        # 8. COMPILE TOUTES LES DONNÉES
+        # ==========================================
         full_data = {
             **token_data,
             "contract": contract,
@@ -149,9 +213,13 @@ class MemeSniper:
             "mention_count": 0,
         }
 
-        logger.info(f"📈 ${symbol} — Score : {score}/10")
+        logger.info(
+            f"📈 ${symbol} — Score : {score}/10"
+        )
 
-        # 7. Alerte spéciale baleine
+        # ==========================================
+        # 9. ALERTE SPÉCIALE BALEINE
+        # ==========================================
         if whale_data.get("is_smart_money_signal"):
             logger.info(
                 f"🐋 SMART MONEY sur ${symbol} !"
@@ -162,7 +230,9 @@ class MemeSniper:
                     full_data
                 )
 
-        # 8. Alerte principale si score suffisant
+        # ==========================================
+        # 10. ALERTE PRINCIPALE
+        # ==========================================
         if score >= SCORE_MIN_ALERT:
             self.alert_count += 1
             logger.info(
@@ -189,6 +259,7 @@ class MemeSniper:
             f"⏰ Uptime : {hours}h {minutes}min\n"
             f"🔍 Scans : {self.scan_count}\n"
             f"🔔 Alertes : {self.alert_count}\n"
+            f"⛔ EVM rejetés : {self.rejected_evm}\n"
             f"📋 Tokens analysés : "
             f"{len(self.analyzed_tokens)}\n"
             f"🟢 Bot en bonne santé"
@@ -196,13 +267,16 @@ class MemeSniper:
 
     def start(self):
         """Démarre le bot en boucle continue"""
-        logger.info("🤖 BOT v2.0 ACTIF")
+        logger.info("🤖 BOT v2.1 ACTIF")
         logger.info(
             f"⏰ Scan toutes les {SCAN_INTERVAL_SECONDS}s"
         )
         logger.info(
             f"🎯 Score minimum pour alerter : "
             f"{SCORE_MIN_ALERT}/10"
+        )
+        logger.info(
+            f"🔒 Filtre STRICT : Solana uniquement"
         )
 
         # Premier scan immédiat
@@ -229,6 +303,7 @@ class MemeSniper:
                 f"📊 Session :\n"
                 f"   🔍 Scans : {self.scan_count}\n"
                 f"   🔔 Alertes : {self.alert_count}\n"
+                f"   ⛔ EVM rejetés : {self.rejected_evm}\n"
                 f"   📋 Tokens : "
                 f"{len(self.analyzed_tokens)}"
             )
