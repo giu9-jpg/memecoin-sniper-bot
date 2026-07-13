@@ -1,266 +1,300 @@
-"""
-Module d'envoi d'alertes Telegram
-Formate les données et envoie sur ton Telegram
-"""
+# modules/alert_sender.py — v3.0
+# Alertes catégorisées selon le type de signal
 
 import os
-import requests
-from datetime import datetime
-from dotenv import load_dotenv
+import json
+import time
+import asyncio
+import aiohttp
 from utils.logger import logger
 
-load_dotenv()
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
+BASE_URL           = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+
+DEXSCREENER_URL = "https://dexscreener.com/solana/{address}"
+BIRDEYE_URL     = "https://birdeye.so/token/{address}?chain=solana"
+RUGCHECK_URL    = "https://rugcheck.xyz/tokens/{address}"
+SOLSCAN_URL     = "https://solscan.io/token/{address}"
+TROJAN_URL      = "https://t.me/TrojanOnSolana_bot?start=snipe_{address}"
 
 
 class AlertSender:
+
     def __init__(self):
-        self.bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-        self.chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        self.base_url = (
-            f"https://api.telegram.org/bot{self.bot_token}"
+        self.session = None
+
+    async def _get_session(self):
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession()
+        return self.session
+
+    # ── DÉMARRAGE ────────────────────────────────────────
+    async def send_startup_message(self):
+        text = (
+            "🤖 *MemeSniper v3\\.0 démarré \\!*\n\n"
+            "✅ WebSocket PumpPortal actif\n"
+            "✅ Détection momentum pre\\-pump\n"
+            "✅ 7 signaux analysés par token\n"
+            "✅ Whale Tracker actif\n\n"
+            "📡 _En chasse\\.\\.\\._"
         )
-        self.alerts_sent = 0
-        self.session_start = datetime.utcnow()
+        await self._send_message(text)
 
-        if not self.bot_token:
-            logger.error(
-                "❌ TELEGRAM_BOT_TOKEN manquant dans .env"
-            )
-        if not self.chat_id:
-            logger.error(
-                "❌ TELEGRAM_CHAT_ID manquant dans .env"
-            )
+    # ── ALERTE PRINCIPALE ─────────────────────────────────
+    async def send_token_alert(self, analysis: dict):
+        text    = self._build_message(analysis)
+        buttons = self._build_buttons(analysis)
+        await self._send_message(text, reply_markup=buttons)
 
-    def send_alert(self, data):
-        """Envoie une alerte formatée avec toutes les infos"""
-        message = self._format_alert(data)
-        success = self._send_message(message)
-        if success:
-            self.alerts_sent += 1
-        return success
+    # ── MESSAGE ───────────────────────────────────────────
+    def _build_message(self, a: dict) -> str:
+        score       = a.get("score", 0)
+        signal_type = a.get("signal_type", "A_SURVEILLER")
+        address     = a.get("address", "")
 
-    def _format_alert(self, data):
-        """Formate le message Telegram complet"""
-        score = data.get("score", 0)
+        # ── Header selon le signal ──────────────────────
+        headers = {
+            "GEM_ULTIME":         "💎 *GEM ULTIME DÉTECTÉE*",
+            "ACCUMULATION_FORTE": "🤫 *ACCUMULATION SILENCIEUSE*",
+            "EARLY_PUMP":         "🚀 *EARLY PUMP DÉTECTÉ*",
+            "VOLUME_EXPLOSION":   "💥 *EXPLOSION DE VOLUME*",
+            "PRESSION_ACHETEUSE": "🟢 *FORTE PRESSION ACHETEUSE*",
+            "GEM_FORTE":          "💎 *GEM POTENTIELLE*",
+            "BON_TOKEN":          "✅ *BON TOKEN*",
+            "A_SURVEILLER":       "👀 *TOKEN À SURVEILLER*",
+        }
+        header = headers.get(signal_type, "📊 *TOKEN DÉTECTÉ*")
 
-        # Recommandation
-        if score >= 7:
-            emoji = "🟢"
-            reco = "ACHÈTE"
-            montant = f"{min(50, max(10, int(score * 5)))}$"
-            urgence = "⚡ ACTION RAPIDE RECOMMANDÉE"
-        elif score >= 5:
-            emoji = "🟡"
-            reco = "SURVEILLE / PETIT MONTANT"
-            montant = "10$"
-            urgence = "👀 À SURVEILLER"
+        # ── Barre de score ───────────────────────────────
+        score_bar = "█" * int(score) + "░" * (10 - int(score))
+
+        # ── Conseil selon le signal ──────────────────────
+        conseils = {
+            "GEM_ULTIME":
+                "🎯 _Tous les signaux au vert \\— Forte conviction_",
+            "ACCUMULATION_FORTE":
+                "🤫 _Accumulation avant pump \\— Fenêtre rare_",
+            "EARLY_PUMP":
+                "⚡ _Momentum haussier \\— Agis vite_",
+            "VOLUME_EXPLOSION":
+                "💥 _Volume x{:.0f} \\— Intérêt croissant_".format(
+                    a.get("vol_acceleration", 1)
+                ),
+            "PRESSION_ACHETEUSE":
+                "🟢 _Ratio buy/sell {:.1f}x \\— Accumulateurs actifs_".format(
+                    a.get("ratio_buy_5m", 0)
+                ),
+            "GEM_FORTE":
+                "💎 _Bons fondamentaux \\— Position possible_",
+            "BON_TOKEN":
+                "✅ _Token correct \\— Petite position_",
+            "A_SURVEILLER":
+                "👀 _Surveille sans acheter pour l'instant_",
+        }
+        conseil = conseils.get(signal_type, "")
+
+        # ── Métriques ────────────────────────────────────
+        age = a.get("age_minutes", 0)
+        if age < 60:
+            age_str = f"{age:.0f} min"
+        elif age < 1440:
+            age_str = f"{age/60:.1f}h"
         else:
-            emoji = "🔴"
-            reco = "ÉVITE"
-            montant = "0$"
-            urgence = "⛔ PASSE TON CHEMIN"
+            age_str = f"{age/1440:.1f}j"
+
+        mc = a.get("market_cap", 0)
+        if mc < 1_000_000:
+            mc_str = f"${mc/1000:.0f}K"
+        else:
+            mc_str = f"${mc/1_000_000:.1f}M"
+
+        # Variations de prix
+        c5m  = a.get("price_change_5m", 0)
+        c1h  = a.get("price_change_1h", 0)
+        c24h = a.get("price_change_24h", 0)
+
+        def fmt_pct(v):
+            sign = "\\+" if v >= 0 else ""
+            return f"{sign}{v:.1f}%"
 
         # Sécurité
-        honeypot = data.get("honeypot_verdict", "⚠️ N/A")
-        liq_lock = "✅" if data.get("liquidity_locked") else "❌"
-        mint = "✅" if data.get("mint_renounced") else "❌"
-        freeze = "⚠️ OUI" if data.get("freeze_authority") else "✅ NON"
-
-        # Holders concentration
-        top10 = data.get("top10_holders_percent", 0)
-        if top10 > 50:
-            top10_str = f"🔴 {top10:.1f}%"
-        elif top10 > 30:
-            top10_str = f"🟡 {top10:.1f}%"
-        else:
-            top10_str = f"🟢 {top10:.1f}%"
-
-        # Ratio achats/ventes
-        ratio_5m = data.get("buy_sell_ratio_5m", 0)
-        ratio_1h = data.get("buy_sell_ratio_1h", 0)
-        if ratio_5m >= 2:
-            ratio_str = f"🔥 {ratio_5m}x"
-        elif ratio_5m >= 1.5:
-            ratio_str = f"📈 {ratio_5m}x"
-        else:
-            ratio_str = f"📉 {ratio_5m}x"
-
-        # Âge
-        age = data.get("age_hours", 0)
-        if age <= 1:
-            age_str = f"🆕 {age}h (TRÈS EARLY)"
-        elif age <= 6:
-            age_str = f"⏰ {age}h (Early)"
-        else:
-            age_str = f"⏰ {age}h"
+        mint   = "✅" if a.get("mint_renounced") else "❌"
+        freeze = "✅" if not a.get("freeze_auth") else "⚠️"
+        lp     = "✅" if a.get("lp_locked")       else "❓"
+        top10  = a.get("top_10_holders_pct", 0)
 
         # Baleines
-        whale_count = data.get("whale_count", 0)
-        whale_names = data.get("whale_names", [])
-        if whale_count > 0:
-            whale_str = (
-                f"🐋 {whale_count} baleine(s) : "
-                f"{', '.join(whale_names)}"
-            )
-        else:
-            whale_str = "Aucune baleine détectée"
-
-        # Points forts/faibles
-        details = data.get("score_details", {})
-        positifs = details.get("positifs", [])
-        negatifs = details.get("negatifs", [])
-
-        positifs_str = (
-            "\n".join([f"   {p}" for p in positifs[:3]])
-            if positifs else "   Aucun"
-        )
-        negatifs_str = (
-            "\n".join([f"   {n}" for n in negatifs[:3]])
-            if negatifs else "   Aucun"
+        wc = a.get("whale_count", 0)
+        whale_line = (
+            f"🐋 *{wc} baleine\\(s\\) détectée\\(s\\) \\!*\n"
+            if wc > 0 else ""
         )
 
-        # Liens utiles
-        dex_url = data.get("url", "")
-        contract = data.get("contract", "N/A")
-        rugcheck_url = (
-            f"https://rugcheck.xyz/tokens/{contract}"
-        )
-        dexscreener_url = (
-            dex_url or
-            f"https://dexscreener.com/solana/{contract}"
-        )
-        birdeye_url = (
-            f"https://birdeye.so/token/{contract}"
-            f"?chain=solana"
+        # Raisons (max 4)
+        reasons     = a.get("score_reasons", [])
+        reasons_str = ""
+        if reasons:
+            reasons_str = "\n📋 *Signaux détectés :*\n"
+            for r in reasons[:4]:
+                reasons_str += f"  {self._esc(r)}\n"
+
+        return (
+            f"{header}\n\n"
+            f"🪙 *{self._esc(a.get('name','?'))}* "
+            f"\\(\\${self._esc(a.get('symbol','?'))}\\)\n"
+            f"`{address}`\n\n"
+            f"📊 *Score : {score_bar} {score:.1f}/10*\n"
+            f"{conseil}\n\n"
+            f"{whale_line}"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"💎 Market Cap  : *{mc_str}*\n"
+            f"💰 Liquidité   : *${a.get('liquidity',0):,.0f}*\n"
+            f"📈 Volume 1h   : *${a.get('volume_1h',0):,.0f}*\n"
+            f"⏰ Âge         : *{age_str}*\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"📉 5m : *{fmt_pct(c5m)}* \\| "
+            f"1h : *{fmt_pct(c1h)}* \\| "
+            f"24h : *{fmt_pct(c24h)}*\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"🔒 Mint  : {mint} \\| "
+            f"Freeze : {freeze} \\| "
+            f"LP : {lp}\n"
+            f"👛 Top 10 holders : *{top10:.0f}%*\n"
+            f"{reasons_str}\n"
+            f"⏰ _{self._timestamp()}_"
         )
 
-        message = (
-            f"{'='*35}\n"
-            f"🎯 *${data.get('symbol', '???')}* "
-            f"— {data.get('name', 'Inconnu')}\n"
-            f"📊 *SCORE : {score}/10 {emoji}*\n"
-            f"💡 *{reco}* | {urgence}\n"
-            f"{'='*35}\n\n"
-            f"📍 *CONTRACT :*\n"
-            f"`{contract}`\n\n"
-            f"{'─'*30}\n"
-            f"💰 *MARCHÉ*\n"
-            f"{'─'*30}\n"
-            f"💲 Prix     : ${data.get('price_usd', 0):.8f}\n"
-            f"💧 Liq.     : ${data.get('liquidity_usd', 0):,.0f}\n"
-            f"📊 Vol 24h  : ${data.get('volume_24h', 0):,.0f}\n"
-            f"📊 Vol 1h   : ${data.get('volume_1h', 0):,.0f}\n"
-            f"🏦 Mkt Cap  : ${data.get('market_cap', 0):,.0f}\n"
-            f"⏰ Âge      : {age_str}\n\n"
-            f"{'─'*30}\n"
-            f"📈 *MOMENTUM*\n"
-            f"{'─'*30}\n"
-            f"5min  : {data.get('price_change_5m', 0):+.1f}%\n"
-            f"1h    : {data.get('price_change_1h', 0):+.1f}%\n"
-            f"24h   : {data.get('price_change_24h', 0):+.1f}%\n"
-            f"B/S 5m: {ratio_str} "
-            f"({data.get('buys_5m', 0)}B/"
-            f"{data.get('sells_5m', 0)}S)\n\n"
-            f"{'─'*30}\n"
-            f"🛡️ *SÉCURITÉ*\n"
-            f"{'─'*30}\n"
-            f"Honeypot  : {honeypot}\n"
-            f"Liq. Lock : {liq_lock}\n"
-            f"Mint      : {mint}\n"
-            f"Freeze    : {freeze}\n"
-            f"Holders   : {top10_str} (top10)\n"
-            f"Count     : {data.get('holder_count', '?')}\n\n"
-            f"{'─'*30}\n"
-            f"✅ *POINTS FORTS*\n"
-            f"{positifs_str}\n\n"
-            f"❌ *POINTS FAIBLES*\n"
-            f"{negatifs_str}\n\n"
-            f"{'─'*30}\n"
-            f"🐋 *BALEINES*\n"
-            f"{whale_str}\n\n"
-            f"{'─'*30}\n"
-            f"💰 *MONTANT SUGGÉRÉ : {montant}*\n"
-            f"{'─'*30}\n\n"
-            f"🔗 [DexScreener]({dexscreener_url})\n"
-            f"🔗 [RugCheck]({rugcheck_url})\n"
-            f"🔗 [Birdeye]({birdeye_url})\n\n"
-            f"🕐 {datetime.utcnow().strftime('%H:%M:%S')} UTC\n"
-            f"{'='*35}"
-        )
-        return message
+    # ── BOUTONS ───────────────────────────────────────────
+    def _build_buttons(self, a: dict) -> dict:
+        addr = a.get("address", "")
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": "🛒 Buy 10$ — Trojan",
+                     "url": TROJAN_URL.format(address=addr)},
+                    {"text": "🛒 Buy 20$ — Trojan",
+                     "url": TROJAN_URL.format(address=addr)},
+                ],
+                [
+                    {"text": "📊 DexScreener",
+                     "url": DEXSCREENER_URL.format(address=addr)},
+                    {"text": "🦅 Birdeye",
+                     "url": BIRDEYE_URL.format(address=addr)},
+                ],
+                [
+                    {"text": "🔍 RugCheck",
+                     "url": RUGCHECK_URL.format(address=addr)},
+                    {"text": "📋 Solscan",
+                     "url": SOLSCAN_URL.format(address=addr)},
+                ],
+            ]
+        }
 
-    def _send_message(self, text):
-        """Envoie le message via l'API Telegram"""
+    # ── ALERTE BALEINE ────────────────────────────────────
+    async def send_whale_alert(self, whale_data: dict):
+        addr   = whale_data.get("token_address", "")
+        action = whale_data.get("action", "buy")
+        emoji  = "🐋🟢" if action == "buy" else "🐋🔴"
+        verb   = "ACHÈTE" if action == "buy" else "VEND"
+
+        text = (
+            f"{emoji} *MOUVEMENT BALEINE*\n\n"
+            f"👛 *{self._esc(whale_data.get('whale_label','?'))}*\n"
+            f"📌 *{verb}* "
+            f"\\${self._esc(whale_data.get('token_symbol','?'))}\n"
+            f"💵 Montant : *${whale_data.get('amount_usd',0):,.0f}*\n\n"
+            f"`{addr}`\n\n"
+            f"⚡ _Signal fort \\— Agis vite_"
+        )
+
+        buttons = None
+        if addr:
+            buttons = {"inline_keyboard": [[
+                {"text": "🛒 Buy — Trojan",
+                 "url": TROJAN_URL.format(address=addr)},
+                {"text": "📊 DexScreener",
+                 "url": DEXSCREENER_URL.format(address=addr)},
+            ]]}
+
+        await self._send_message(text, reply_markup=buttons)
+
+    # ── COMPATIBILITÉ ANCIEN CODE ─────────────────────────
+    def send_simple_message(self, text: str):
+        """Compatibilité avec l'ancien code synchrone."""
+        import requests
         try:
-            url = f"{self.base_url}/sendMessage"
-            payload = {
-                "chat_id": self.chat_id,
-                "text": text,
-                "parse_mode": "Markdown",
-                "disable_web_page_preview": False,
-            }
-            response = requests.post(
-                url, json=payload, timeout=10
+            clean = text.replace("*", "").replace("_", "")
+            requests.post(
+                f"{BASE_URL}/sendMessage",
+                json={
+                    "chat_id":    TELEGRAM_CHAT_ID,
+                    "text":       clean,
+                    "parse_mode": "Markdown",
+                },
+                timeout=10
             )
-            if response.status_code == 200:
-                logger.info("✅ Alerte Telegram envoyée")
-                return True
-            else:
-                logger.error(
-                    f"❌ Telegram erreur "
-                    f"{response.status_code} : "
-                    f"{response.text}"
-                )
-                return False
         except Exception as e:
-            logger.error(f"❌ Envoi impossible : {e}")
-            return False
+            logger.error(f"[TELEGRAM] send_simple_message: {e}")
 
-    def send_simple_message(self, text):
-        """Envoie un message simple"""
-        self._send_message(text)
+    def send_alert(self, data: dict):
+        """Compatibilité avec l'ancien code synchrone."""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(self.send_token_alert(data))
+            else:
+                loop.run_until_complete(self.send_token_alert(data))
+        except Exception as e:
+            logger.error(f"[TELEGRAM] send_alert: {e}")
 
-    def send_whale_alert(self, whale_data, token_data):
-        """Alerte spéciale quand une baleine est détectée"""
-        message = (
-            f"🚨🐋 *SMART MONEY ALERT* 🐋🚨\n\n"
-            f"Une baleine connue vient d'acheter !\n\n"
-            f"🐋 Wallet : {whale_data.get('name')}\n"
-            f"📈 Win Rate : {whale_data.get('win_rate')}\n"
-            f"🎯 Spécialité : {whale_data.get('specialty')}\n\n"
-            f"💎 Token : *${token_data.get('symbol')}*\n"
-            f"📊 Score : {token_data.get('score')}/10\n"
-            f"💧 Liquidité : "
-            f"${token_data.get('liquidity_usd', 0):,.0f}\n\n"
-            f"⚡ *ANALYSE IMMÉDIATE RECOMMANDÉE*"
-        )
-        self._send_message(message)
+    # ── ENVOI HTTP ────────────────────────────────────────
+    async def _send_message(
+        self, text: str,
+        reply_markup: dict = None,
+        retries: int = 3
+    ):
+        if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+            logger.error("[TELEGRAM] Token ou Chat ID manquant !")
+            return
 
-    def send_stats(self):
-        """Envoie les statistiques de session"""
-        uptime = datetime.utcnow() - self.session_start
-        hours = int(uptime.total_seconds() // 3600)
-        minutes = int((uptime.total_seconds() % 3600) // 60)
+        payload = {
+            "chat_id":    TELEGRAM_CHAT_ID,
+            "text":       text,
+            "parse_mode": "MarkdownV2",
+        }
+        if reply_markup:
+            payload["reply_markup"] = json.dumps(reply_markup)
 
-        message = (
-            f"📊 *STATS SESSION*\n\n"
-            f"⏰ Uptime : {hours}h {minutes}min\n"
-            f"🔔 Alertes envoyées : {self.alerts_sent}\n"
-            f"🔍 Source : DexScreener\n"
-            f"✅ Statut : Actif"
-        )
-        self._send_message(message)
+        session = await self._get_session()
+        for attempt in range(retries):
+            try:
+                async with session.post(
+                    f"{BASE_URL}/sendMessage",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as resp:
+                    if resp.status == 200:
+                        logger.debug("[TELEGRAM] ✅ Envoyé")
+                        return
+                    body = await resp.text()
+                    logger.warning(
+                        f"[TELEGRAM] {resp.status}: {body[:150]}"
+                    )
+            except Exception as e:
+                logger.error(f"[TELEGRAM] Tentative {attempt+1}: {e}")
+                await asyncio.sleep(2 ** attempt)
 
-    def send_test(self):
-        """Test de connexion Telegram"""
-        self._send_message(
-            "🤖 *Bot Sniper Memecoin*\n"
-            "✅ Connexion Telegram OK !\n\n"
-            "📊 Configuration :\n"
-            "   🔍 Source : DexScreener\n"
-            "   🛡️ Sécurité : RugCheck\n"
-            "   🐋 Baleines : Actif\n"
-            "   ⏰ Scan : toutes les 30s\n"
-            "   🎯 Score min : 5/10\n\n"
-            "🚀 *Prêt à chasser les gems !*"
-        )
+    # ── UTILS ─────────────────────────────────────────────
+    @staticmethod
+    def _esc(text: str) -> str:
+        """Échappe les caractères MarkdownV2."""
+        for ch in r"\_*[]()~`>#+-=|{}.!":
+            text = str(text).replace(ch, f"\\{ch}")
+        return text
+
+    @staticmethod
+    def _timestamp() -> str:
+        from datetime import datetime
+        return datetime.utcnow().strftime("%d/%m/%Y %H:%M UTC")

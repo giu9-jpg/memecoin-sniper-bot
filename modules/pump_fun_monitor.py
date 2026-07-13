@@ -1,170 +1,141 @@
-"""
-Monitor de nouveaux tokens Solana
-Utilise DexScreener — FILTRE STRICT Solana uniquement
-"""
+# modules/pump_fun_monitor.py — v2.2
+# Polling DexScreener (backup du WebSocket)
 
-import requests
+import aiohttp
+import asyncio
+import time
 from utils.logger import logger
+
+DEXSCREENER_SEARCH = (
+    "https://api.dexscreener.com/latest/dex/search?q=solana"
+)
+DEXSCREENER_NEW = (
+    "https://api.dexscreener.com/token-profiles/latest/v1"
+)
 
 
 class PumpFunMonitor:
+
     def __init__(self):
-        self.dexscreener_base = (
-            "https://api.dexscreener.com/latest"
-        )
-        # Endpoint spécifique aux tokens Solana récents
-        self.token_profiles_url = (
-            "https://api.dexscreener.com"
-            "/token-profiles/latest/v1"
-        )
-        self.token_boosts_url = (
-            "https://api.dexscreener.com"
-            "/token-boosts/latest/v1"
-        )
-        self.known_tokens = set()
+        self.session     = None
+        self.seen_tokens = set()
+        logger.info("[POLLING] PumpFunMonitor initialisé")
 
-    def get_trending_tokens(self):
+    async def _get_session(self):
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession()
+        return self.session
+
+    # ── MÉTHODE PRINCIPALE ───────────────────────────────
+    async def get_new_tokens(self) -> list:
         """
-        Récupère les tokens Solana trending
-        FILTRE STRICT : Solana uniquement
+        Récupère les nouveaux tokens Solana via DexScreener.
+        Retourne une liste de tokens non encore vus.
         """
         try:
-            # Utilise l'endpoint des tokens boostés
-            # (plus pertinent pour les memecoins récents)
-            response = requests.get(
-                self.token_boosts_url,
-                timeout=10
-            )
+            tokens = await self._fetch_new_tokens()
+            if not tokens:
+                return []
 
-            if response.status_code != 200:
-                logger.error(
-                    f"DexScreener boosts erreur : "
-                    f"{response.status_code}"
+            # Filtre les tokens déjà vus
+            new_tokens = []
+            for token in tokens:
+                address = (
+                    token.get("tokenAddress")
+                    or token.get("address")
+                    or token.get("baseToken", {}).get("address", "")
                 )
-                return self._fallback_search()
-
-            data = response.json()
-
-            # ⚠️ FILTRE STRICT : Solana uniquement
-            solana_tokens = [
-                t for t in data
-                if t.get("chainId") == "solana"
-            ]
-
-            logger.info(
-                f"📊 {len(solana_tokens)} tokens "
-                f"Solana boostés trouvés"
-            )
-
-            trending = []
-            for token in solana_tokens[:30]:
-                contract = token.get("tokenAddress", "")
-
-                # ⚠️ VÉRIFICATION : Pas d'adresse EVM
-                if not contract or contract.startswith("0x"):
+                if not address:
+                    continue
+                if address.startswith("0x"):
+                    continue
+                if address in self.seen_tokens:
                     continue
 
-                if contract in self.known_tokens:
-                    continue
+                self.seen_tokens.add(address)
+                new_tokens.append(token)
 
-                self.known_tokens.add(contract)
+            # Nettoyage mémoire
+            if len(self.seen_tokens) > 5000:
+                self.seen_tokens = set(
+                    list(self.seen_tokens)[-2000:]
+                )
 
-                trending.append({
-                    "name": token.get("description", "")[:50],
-                    "symbol": "???",
-                    "contract": contract,
-                    "chain": "solana",
-                })
+            if new_tokens:
+                logger.info(
+                    f"[POLLING] {len(new_tokens)} nouveau(x) token(s)"
+                )
 
-            return trending
+            return new_tokens
 
         except Exception as e:
-            logger.error(f"DexScreener erreur : {e}")
-            return self._fallback_search()
-
-    def _fallback_search(self):
-        """
-        Méthode de secours : recherche via search API
-        avec filtre Solana strict
-        """
-        try:
-            url = (
-                f"{self.dexscreener_base}"
-                f"/dex/search/?q=SOL"
-            )
-            response = requests.get(url, timeout=10)
-            data = response.json()
-
-            pairs = data.get("pairs", [])
-
-            # ⚠️ TRIPLE FILTRE : Solana uniquement
-            solana_pairs = [
-                p for p in pairs
-                if (
-                    p.get("chainId") == "solana"
-                    and not p.get(
-                        "baseToken", {}
-                    ).get("address", "").startswith("0x")
-                )
-            ]
-
-            logger.info(
-                f"📊 Fallback : {len(solana_pairs)} "
-                f"paires Solana"
-            )
-
-            trending = []
-            for pair in solana_pairs[:30]:
-                contract = pair.get(
-                    "baseToken", {}
-                ).get("address", "")
-
-                if not contract or contract in self.known_tokens:
-                    continue
-
-                # ⚠️ SÉCURITÉ : Rejette les EVM
-                if contract.startswith("0x"):
-                    logger.warning(
-                        f"⛔ Token EVM détecté et ignoré : "
-                        f"{contract}"
-                    )
-                    continue
-
-                self.known_tokens.add(contract)
-
-                # Filtre âge : moins de 7 jours
-                created_at = pair.get("pairCreatedAt", 0)
-                if created_at:
-                    import time
-                    age_hours = (
-                        time.time() - created_at / 1000
-                    ) / 3600
-                    if age_hours > 168:  # 7 jours max
-                        continue
-
-                trending.append({
-                    "name": pair.get(
-                        "baseToken", {}
-                    ).get("name", ""),
-                    "symbol": pair.get(
-                        "baseToken", {}
-                    ).get("symbol", ""),
-                    "contract": contract,
-                    "chain": "solana",
-                    "liquidity": float(
-                        pair.get("liquidity", {}).get("usd", 0)
-                    ),
-                    "volume_24h": float(
-                        pair.get("volume", {}).get("h24", 0)
-                    ),
-                })
-
-            return trending
-
-        except Exception as e:
-            logger.error(f"Fallback erreur : {e}")
+            logger.error(f"[POLLING] Erreur get_new_tokens: {e}")
             return []
 
-    def get_graduating_tokens(self):
-        """Compatibilité"""
-        return self.get_trending_tokens()
+    # ── FETCH DEXSCREENER ────────────────────────────────
+    async def _fetch_new_tokens(self) -> list:
+        """Récupère les tokens récents sur DexScreener."""
+        session = await self._get_session()
+        tokens  = []
+
+        # Source 1 — Nouveaux profils de tokens
+        try:
+            async with session.get(
+                DEXSCREENER_NEW,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if isinstance(data, list):
+                        for item in data:
+                            addr = item.get("tokenAddress", "")
+                            if (addr
+                                    and not addr.startswith("0x")
+                                    and item.get("chainId") == "solana"):
+                                tokens.append({
+                                    "tokenAddress": addr,
+                                    "symbol": item.get("symbol", "???"),
+                                    "name":   item.get("name", "Unknown"),
+                                })
+        except Exception as e:
+            logger.debug(f"[POLLING] Source 1 erreur: {e}")
+
+        # Source 2 — Trending Solana
+        try:
+            url = (
+                "https://api.dexscreener.com/latest/dex/tokens/"
+                "So11111111111111111111111111111111111111112"
+            )
+            async with session.get(
+                url,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status == 200:
+                    data  = await resp.json()
+                    pairs = data.get("pairs", []) or []
+                    for pair in pairs[:20]:
+                        if pair.get("chainId") != "solana":
+                            continue
+                        addr = (
+                            pair.get("baseToken", {})
+                                .get("address", "")
+                        )
+                        if addr and not addr.startswith("0x"):
+                            tokens.append({
+                                "tokenAddress": addr,
+                                "symbol": pair.get(
+                                    "baseToken", {}
+                                ).get("symbol", "???"),
+                                "name": pair.get(
+                                    "baseToken", {}
+                                ).get("name", "Unknown"),
+                            })
+        except Exception as e:
+            logger.debug(f"[POLLING] Source 2 erreur: {e}")
+
+        return tokens
+
+    # ── COMPATIBILITÉ ANCIEN CODE ─────────────────────────
+    def get_trending_tokens(self) -> list:
+        """Compatibilité avec l'ancien code synchrone."""
+        return []
