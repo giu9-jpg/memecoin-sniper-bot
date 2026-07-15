@@ -1,5 +1,5 @@
-# modules/token_analyzer.py — v6.0
-# Score momentum + smart signals + alpha wallets
+# modules/token_analyzer.py — v7.0
+# Score momentum + smart signals + alpha wallets + multi-timeframe
 
 import aiohttp
 import asyncio
@@ -169,6 +169,16 @@ class TokenAnalyzer:
         elif momentum_signal == "DUMP":
             score -= 2.0
             reasons.append("🔴 DUMP")
+
+        # ── MULTI-TIMEFRAME (v7.0) ────────────────────
+        mtf_bonus, mtf_signal = self._analyze_multi_timeframe(
+            price_change_5m, price_change_1h,
+            price_change_6h, price_change_24h
+        )
+        if mtf_bonus != 0:
+            score += mtf_bonus
+            if mtf_signal:
+                reasons.append(mtf_signal)
 
         # ── HOLDERS ───────────────────────────────────
         holder_signal = self._analyze_holders(holders, age_minutes, market_cap)
@@ -352,6 +362,50 @@ class TokenAnalyzer:
                 and change_24h < 100):
             return "ACCUMULATION"
         return "NEUTRE"
+
+    def _analyze_multi_timeframe(
+        self, change_5m, change_1h, change_6h, change_24h
+    ) -> tuple[float, str]:
+        """
+        Détecte les patterns multi-timeframe.
+        Retourne (bonus_score, signal_name)
+        """
+        # Pattern 1 — Breakout depuis consolidation
+        if (abs(change_24h) < 30
+                and abs(change_6h) < 20
+                and change_1h > 15
+                and change_5m > 5):
+            return 2.5, "🎯 BREAKOUT depuis consolidation"
+
+        # Pattern 2 — Accumulation silencieuse multi-TF
+        if (0 < change_24h < 100
+                and 0 < change_6h < 50
+                and 0 < change_1h < 30
+                and change_5m > 0):
+            return 2.0, "💎 Accumulation multi-TF alignée"
+
+        # Pattern 3 — Momentum fort aligné tous TF
+        if (change_5m > 10
+                and change_1h > 20
+                and change_6h > 30
+                and change_24h < 500):
+            return 3.0, "🚀 Momentum ALIGNÉ tous TF"
+
+        # Pattern 4 — Dead cat bounce (éviter)
+        if change_24h < -40 and change_1h > 10:
+            return -2.0, "🔴 Dead cat bounce détecté"
+
+        # Pattern 5 — Pump épuisé
+        if change_24h > 500 and change_1h < 0:
+            return -1.5, "🔴 Pump épuisé"
+
+        # Pattern 6 — Early momentum
+        if (0 < change_5m < 20
+                and change_1h > 5
+                and change_24h < 200):
+            return 1.0, "📈 Early momentum"
+
+        return 0.0, ""
 
     def _analyze_holders(
         self, holders, age_minutes, market_cap

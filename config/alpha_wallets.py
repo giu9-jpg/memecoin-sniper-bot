@@ -1,34 +1,73 @@
-# config/alpha_wallets.py — v6.0
-# Liste des "alpha wallets" - traders qui ont fait +1000% récemment
+# config/alpha_wallets.py — v7.0
+# Top 20 alpha wallets vérifiés sur GMGN + Cielo Finance
+# Dernière mise à jour : Juillet 2025
 
 ALPHA_WALLETS = {
-    # ══════════ TIER 1 — Légendes ══════════
+
+    # ══════════════════════════════════════════════════
+    # 🥇 TIER 1 — ÉLITE (8 wallets)
+    # Confirmés multi-plateformes ou top rank
+    # Win Rate > 70% | PnL > $100k
+    # ══════════════════════════════════════════════════
     "TIER1": [
-        "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",  # Ansem
-        "GJRs4FwHtemZ5ZE9x3FNvJ8TMwitKTh21yxdRPqn7npE",  # 0xSun
-        "6QG5X6cULLLd4CBpV3zTaJvQtN2ZdQEwFxTF8y1ub7nL",  # Cented
-        "F1Kir7cf4z3uYX9dXY3AAhUKfCyGaLdRWfKtj7BdF6BE",  # Mert
-        "AA6Y6iTuBjRnfnwzs2fLDbKmHVGnHwMWXQ3d4vqB4W7z",  # Frank
+        # ── Confirmés GMGN + Cielo (les meilleurs) ──
+        "hnu69n6P5CgYXCtUKii9wgamqtDeTVHY3TVJ6HKt7wC",
+        "gtfoTELAeEZHUgHetA6umfsCETiBMzJCN4tB2sqCgFL",
+
+        # ── Top GMGN Tier 1 ─────────────────────────
+        "C3pnJjni74HSJSE8xRjG1fcY5h5VpN4gSHXgYwnXmD83",
+        "7UaUSBDNwiQtbPrDi8piH1wKvmgymUBmkY8zkAk9jQwR",
+        "Hd5wMoiypHWRQmkus5SHu6ECH27fXVqkhg3d5rGhvLAL",
+
+        # ── Top Cielo Tier 1 ────────────────────────
+        "yHCxHBEaJW5tbndqC8JciSThr7U1cqLpdcsvHcx6PRe",
+        "8ZN71XTdVo8yRovnGLmNgW3Tgniw6A4J3JGLvPD686FP",
+
+        # ── Nouveau GMGN #1 ─────────────────────────
+        "9R6fxLZVnjuPyeX4ns6UnhwkKh9XNpUaHuJSUSyxjGQT",
     ],
 
-    # ══════════ TIER 2 — Confirmés ══════════
+    # ══════════════════════════════════════════════════
+    # 🥈 TIER 2 — CONFIRMÉS (7 wallets)
+    # Très bons traders, une seule plateforme
+    # Win Rate > 60% | PnL > $50k
+    # ══════════════════════════════════════════════════
     "TIER2": [
-        "orcACRJYTFjTeo2pV8TfYRTpmqfoYgbVi9GeANXTCc8",   # Kev
-        "2FoDufWLmMDvXvxwmiG7CmA9dNXPHVeVwXQrDPu1FrKm",  # Kadenox
-        "6dsFTWpBhCVJXPdnwyYzr3rF3rTn8YZGYh1i5H85pump",  # Ashley
-        "8DYFhLVvHUiEmvsq3TmY7yEfHZ2XR8ZbNmy5UYZQpump",  # DingerCoins
-        "4kQwbTvPGVEQY8pmzT8xNaK7QVR4dCVWnjTVL7yQaBuM",  # Waddles
+        # ── GMGN Tier 1.5 ────────────────────────────
+        "CAmNcBJ82xr1tzXrwZ6tZKwEFs26TG8kT6dJeR1bxjW9",
+
+        # ── Cielo solides ────────────────────────────
+        "7qNbdfpsVdDGmkzfhQJE1ByVqjzAuf9d2Gaoh388sZtL",
+        "8i5U2uNBEuTc4zskYP14zbebDg2RSwrrG8REhEnJb97K",
+        "6qudAN2kV8mtCcYJxb5QQ6Vr15itdHHdeVbYm99NKMhy",
+
+        # ── Nouveaux GMGN ────────────────────────────
+        "9VL5LaHxAj9irfBDDhikzFRB4qZLu8Xfce3w19rNnNYZ",
+        "2zbM47wNKDfkwYD7d7iaVApaPwof8DSTZJau9UHxuqXv",
+        "FMZ44hADrhZ5AzKKqT7y2sWuZ6f55UZVqnjaqWDbWSja",
     ],
 
-    # ══════════ TIER 3 — Prometteurs ══════════
+    # ══════════════════════════════════════════════════
+    # 🥉 TIER 3 — PROMETTEURS (5 wallets)
+    # Bons wallets à surveiller
+    # Win Rate > 50% | PnL positif
+    # ══════════════════════════════════════════════════
     "TIER3": [
-        "F1RcTVPBBkKZQMSTWnFTHrJ8vHnKfDpBQqYVfGtiPvKf",
-        "GKvpDCyDrqiWJfaEbYWzhDCwvKKfBhpDsWnCDPHnHPtb",
-        "AtRKfHnLp3fCBmEyc3F5FvKfBjJ2fTZ3aVXwYzTGSPTf",
+        # ── Nouveaux GMGN ────────────────────────────
+        "2fNPNJKE3ny6b5Vo1wdfa7J7KqYNjeyBM3PbGGSJ398r",
+        "6QyMtDxcXzTtB8VngkrjMv4pbtG1Gj1XxTuKnyDh3MoS",
+        "5cJuSDxWQzzPUNzBMTisjRJyxz5xLQV6oBfkUiP3HapT",
+
+        # ── Cielo ────────────────────────────────────
+        "FnW6MLyu5UX1G4fYcmmBrPy46foBi6vm4GTWNZQkxUrF",
+        "7ufmve7ZSFCzuNcKRunYrGtyb2Ka1MXzkWwf7jZhVsmL",
     ],
 }
 
-# Bonus par tier
+
+# ══════════════════════════════════════════════════════
+# BONUS PAR TIER
+# ══════════════════════════════════════════════════════
 TIER_BONUS = {
     "TIER1": 3.0,
     "TIER2": 2.0,
@@ -68,4 +107,4 @@ def get_alpha_bonus(wallets_detected: list) -> tuple[float, str]:
     else:
         message = ""
 
-    return min(total_bonus, 5.0), message  # Cap à +5
+    return min(total_bonus, 5.0), message
