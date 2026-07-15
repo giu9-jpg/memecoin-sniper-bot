@@ -1,20 +1,14 @@
-# modules/decision_engine.py — v5.2
-# Moteur de décision + filtres stricts + blacklist tokens connus
+# modules/decision_engine.py — v6.0
+# Moteur de décision + filtres stricts + market context
 
 import time
 from utils.logger import logger
 
 
-# ═══════════════════════════════════════════════════════
-# TOKENS INTERDITS (jamais alerter)
-# ═══════════════════════════════════════════════════════
 BLACKLISTED_TOKENS = {
-    # Solana natif
     "So11111111111111111111111111111111111111112",   # Wrapped SOL
-    # Stablecoins
     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC
     "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",  # USDT
-    # Grands tokens Solana
     "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",  # BONK
     "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",  # WIF
     "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN",   # JUP
@@ -30,13 +24,11 @@ BLACKLISTED_TOKENS = {
 
 class DecisionEngine:
 
-    def __init__(self):
-        self.alert_history = {}
-        self.hourly_alerts = []
+    def __init__(self, market_context=None):
+        self.alert_history  = {}
+        self.hourly_alerts  = []
+        self.market_context = market_context   # ← NOUVEAU v6.0
 
-    # ═══════════════════════════════════════════════════
-    # DÉCISION PRINCIPALE
-    # ═══════════════════════════════════════════════════
     def decide(self, data: dict) -> dict:
         score        = data.get("score", 0)
         smart_count  = data.get("smart_count", 0)
@@ -50,15 +42,25 @@ class DecisionEngine:
         age_minutes  = data.get("age_minutes", 0)
         holders      = data.get("holders", 0)
 
+        # ── FILTRE MARKET CONTEXT (v6.0) ──────────────
+        if self.market_context:
+            market_signal = self.market_context.get_market_signal()
+            if not market_signal["should_alert"]:
+                return self._ignore(f"MARCHÉ: {market_signal['reason']}")
+
+            # Bonus/malus selon contexte macro
+            market_bonus = market_signal.get("bonus", 0)
+            score += market_bonus
+
         # ── FILTRE ABSOLU : tokens blacklistés ────────
         if address in BLACKLISTED_TOKENS:
             return self._ignore("Token blacklisté (SOL/USDC/BONK/etc)")
 
-        # ── FILTRE ÂGE : trop vieux = pas un memecoin ─
-        if age_minutes > 10_080:   # 7 jours
+        # ── FILTRE ÂGE ────────────────────────────────
+        if age_minutes > 10_080:
             return self._ignore(f"Trop vieux: {age_minutes/1440:.0f}j")
 
-        # ── FILTRE COHÉRENCE : MC = 0 est louche ──────
+        # ── FILTRE COHÉRENCE ──────────────────────────
         if market_cap == 0:
             return self._ignore("MC = 0 (données invalides)")
 
@@ -72,7 +74,7 @@ class DecisionEngine:
         if market_cap > 10_000_000:
             return self._ignore(f"MC trop élevé: ${market_cap:,.0f}")
 
-        # ── Filtre holders minimum ────────────────────
+        # ── Filtre holders ────────────────────────────
         if holders < 20:
             return self._ignore(f"Trop peu de holders: {holders}")
 
@@ -88,20 +90,14 @@ class DecisionEngine:
         if not self._check_antispam(address):
             return self._ignore("Anti-spam: déjà alerté récemment")
 
-        # ── Tier (SEUILS STRICTS) ─────────────────────
-        tier = self._get_tier(score, smart_count, has_critical)
-
-        # ── Stratégie selon MC ────────────────────────
+        # ── Tier ──────────────────────────────────────
+        tier     = self._get_tier(score, smart_count, has_critical)
         strategy = self._get_strategy(market_cap)
-
-        # ── Montant ───────────────────────────────────
         amount_eur = self._get_amount(tier)
 
-        # ── Take Profits ──────────────────────────────
         tp_levels = strategy["tp_levels"]
         sl_pct    = strategy["sl_pct"]
 
-        # ── Profit espéré ─────────────────────────────
         if tp_levels:
             weighted_return = sum(
                 tp["multiplier"] * tp["sell_pct"] / 100
@@ -113,7 +109,6 @@ class DecisionEngine:
             profit_pct = 0
             profit_eur = 0
 
-        # ── Action ───────────────────────────────────
         if tier in ["ULTIMATE", "STRONG", "GOOD", "NORMAL"]:
             action = "ACHÈTE"
         else:
@@ -131,12 +126,9 @@ class DecisionEngine:
             "tp_levels":            tp_levels,
             "sl_pct":               sl_pct,
             "strategy_name":        strategy["name"],
-            "reason":               f"Score {score}/10 | {smart_count} smart signals",
+            "reason":               f"Score {score:.1f}/10 | {smart_count} smart signals",
         }
 
-    # ═══════════════════════════════════════════════════
-    # TIERS — VERSION STRICTE (v5.2)
-    # ═══════════════════════════════════════════════════
     def _get_tier(self, score, smart_count, has_critical) -> str:
         if score >= 9.5 and smart_count >= 4:
             return "ULTIMATE"
@@ -157,9 +149,6 @@ class DecisionEngine:
             "IGNORE":   0.0,
         }.get(tier, 0.0)
 
-    # ═══════════════════════════════════════════════════
-    # STRATÉGIES SELON MARKET CAP
-    # ═══════════════════════════════════════════════════
     def _get_strategy(self, market_cap: float) -> dict:
         if market_cap < 50_000:
             return {
@@ -204,9 +193,6 @@ class DecisionEngine:
                 "sl_pct": -20,
             }
 
-    # ═══════════════════════════════════════════════════
-    # ANTI-SPAM
-    # ═══════════════════════════════════════════════════
     def _check_antispam(self, address: str) -> bool:
         now = time.time()
         if address in self.alert_history:
