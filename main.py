@@ -1,5 +1,6 @@
-# main.py — v7.0
+# main.py — v8.0
 # Bot Sniper Memecoin Solana - Ultimate Edition
+# + Copy Trading (v8.0)
 
 import asyncio
 import time
@@ -20,19 +21,21 @@ from modules.alpha_tracker       import AlphaTracker
 from modules.performance_tracker import PerformanceTracker
 
 
-POLLING_INTERVAL     = 30
-HEALTH_CHECK_EVERY   = 300
-POSITION_CHECK_EVERY = 60
-MARKET_CHECK_EVERY   = 180
-ALPHA_CHECK_EVERY    = 300
-STATS_EVERY          = 3600    # Stats toutes les heures
-MIN_SCORE            = 7.5
+POLLING_INTERVAL      = 30
+HEALTH_CHECK_EVERY    = 300
+POSITION_CHECK_EVERY  = 60
+MARKET_CHECK_EVERY    = 180
+ALPHA_CHECK_EVERY     = 300
+COPY_TRADING_EVERY    = 180    # 3 min — copy trading alpha
+STATS_EVERY           = 3600
+MEMORY_CLEANUP_EVERY  = 1800
+MIN_SCORE             = 7.5
 
 
 class MemeSniper:
 
     def __init__(self):
-        # ── v7.0 ──────────────────────────────────────
+        # ── v7.0 + v8.0 ───────────────────────────────
         self.market_context    = MarketContext()
         self.alpha_tracker     = AlphaTracker()
         self.perf_tracker      = PerformanceTracker()
@@ -59,17 +62,20 @@ class MemeSniper:
         self.start_time        = time.time()
         self.tokens_analyzed   = 0
         self.alerts_sent       = 0
+        self.copy_trades       = 0
+        self.max_alerted       = 500
 
     # ═══════════════════════════════════════════════════
     # DÉMARRAGE
     # ═══════════════════════════════════════════════════
 
     async def run(self):
-        logger.info("🚀 MemeSniper v7.0 démarré !")
+        logger.info("🚀 MemeSniper v8.0 démarré !")
         logger.info(f"   Score minimum      : {MIN_SCORE}/10")
         logger.info(f"   Smart Signals      : ACTIVÉS")
         logger.info(f"   Market Context     : ACTIF")
         logger.info(f"   Alpha Wallets      : ACTIF (20 wallets)")
+        logger.info(f"   Copy Trading       : ACTIF (v8.0)")
         logger.info(f"   Performance Track  : ACTIF")
         logger.info(f"   Multi-Timeframe    : ACTIF")
         logger.info(f"   Alertes TP/SL      : ACTIF")
@@ -83,7 +89,6 @@ class MemeSniper:
             f"FG {sig['fear_greed']}"
         )
 
-        # Stats au démarrage
         stats = self.perf_tracker.get_stats()
         logger.info(
             f"   📈 Historique : {stats['total_alerts']} alertes | "
@@ -101,6 +106,8 @@ class MemeSniper:
             self._run_market_updater(),
             self._run_alpha_updater(),
             self._run_stats_reporter(),
+            self._run_memory_cleanup(),
+            self._run_alpha_copy_trading(),   # v8.0
             return_exceptions=True
         )
 
@@ -155,6 +162,51 @@ class MemeSniper:
                 logger.error(f"[ALPHA] Erreur : {e}")
             await asyncio.sleep(ALPHA_CHECK_EVERY)
 
+    # ═══════════════════════════════════════════════════
+    # 🚀 COPY TRADING (v8.0)
+    # ═══════════════════════════════════════════════════
+    async def _run_alpha_copy_trading(self):
+        """
+        Alerte IMMÉDIATE quand un alpha wallet achète.
+        Le bot analyse le token instantanément.
+        """
+        logger.info("[COPY] 🐋 Alpha copy-trading actif (3 min)")
+        await asyncio.sleep(120)   # Attend 2 min au démarrage
+
+        while True:
+            try:
+                async def on_alpha_buy(token, wallet, tier):
+                    """Callback quand un alpha achète."""
+                    self.copy_trades += 1
+                    tier_str = tier or "UNKNOWN"
+
+                    logger.info(
+                        f"[COPY] 🚨 {tier_str} wallet {wallet[:8]}... "
+                        f"→ achat {token[:8]}..."
+                    )
+
+                    # Analyse immédiate (pas de délai)
+                    if token not in self.alerted_tokens:
+                        await self._analyze_and_alert(
+                            token, source=f"copy_{tier_str}"
+                        )
+
+                # Lance le check avec callback
+                new_buys = await self.alpha_tracker.check_new_alpha_buys(
+                    callback=on_alpha_buy
+                )
+
+                if new_buys:
+                    logger.info(
+                        f"[COPY] 📊 {len(new_buys)} nouveau(x) achat(s) "
+                        f"détecté(s) ce cycle"
+                    )
+
+            except Exception as e:
+                logger.error(f"[COPY] Erreur : {e}")
+
+            await asyncio.sleep(COPY_TRADING_EVERY)
+
     async def _run_whale_tracker(self):
         logger.info("[WHALE] Démarré")
         while True:
@@ -180,7 +232,7 @@ class MemeSniper:
 
     async def _run_stats_reporter(self):
         """Envoie les stats de performance toutes les heures."""
-        await asyncio.sleep(3600)   # Premier envoi après 1h
+        await asyncio.sleep(3600)
         while True:
             try:
                 stats_msg = self.perf_tracker.get_summary_message()
@@ -191,6 +243,36 @@ class MemeSniper:
             except Exception as e:
                 logger.error(f"[STATS] Erreur : {e}")
             await asyncio.sleep(STATS_EVERY)
+
+    async def _run_memory_cleanup(self):
+        """Nettoie la mémoire toutes les 30 minutes."""
+        await asyncio.sleep(600)
+        while True:
+            try:
+                import gc
+
+                # 1. Nettoie alpha_tracker
+                self.alpha_tracker.cleanup_old_data()
+
+                # 2. Nettoie alerted_tokens si trop plein
+                if len(self.alerted_tokens) > self.max_alerted:
+                    self.alerted_tokens = set(
+                        list(self.alerted_tokens)[-250:]
+                    )
+
+                # 3. Garbage collection Python
+                collected = gc.collect()
+
+                logger.info(
+                    f"[MEMORY] 🧹 alerted={len(self.alerted_tokens)} | "
+                    f"tokens={len(self.alpha_tracker.token_buyers)} | "
+                    f"gc={collected}"
+                )
+
+            except Exception as e:
+                logger.error(f"[MEMORY] Erreur : {e}")
+
+            await asyncio.sleep(MEMORY_CLEANUP_EVERY)
 
     async def _run_health_check(self):
         await asyncio.sleep(60)
@@ -206,6 +288,7 @@ class MemeSniper:
                 f"[HEALTH] Uptime:{uptime}min | WS:{ws} | "
                 f"Analysés:{self.tokens_analyzed} | "
                 f"Alertes:{self.alerts_sent} | "
+                f"Copy:{self.copy_trades} | "
                 f"Positions:{n_pos} | "
                 f"Marché:{sig['regime']}"
             )
@@ -255,28 +338,42 @@ class MemeSniper:
 
             critical_tag = " 🚨CRITICAL" if has_critical else ""
             alpha_tag    = f" 🐋x{alpha_count}" if alpha_count else ""
+            copy_tag     = " 🚀COPY" if source.startswith("copy_") else ""
 
             logger.info(
                 f"[SCORE] {symbol} — {score}/10 "
                 f"| Smart:{smart_count}"
-                f"{critical_tag}{alpha_tag} "
+                f"{critical_tag}{alpha_tag}{copy_tag} "
                 f"| {source}"
             )
 
-            if score >= MIN_SCORE:
+            # ── Seuil abaissé si copy trading ────────
+            min_score = MIN_SCORE
+            if source.startswith("copy_TIER1"):
+                min_score = 6.0   # TIER1 alpha = confiance élevée
+            elif source.startswith("copy_TIER2"):
+                min_score = 6.5   # TIER2 = confiance moyenne
+
+            if score >= min_score:
                 sent = await self.alert_sender.send_alert(analysis)
                 if sent:
                     self.alerted_tokens.add(address)
                     self.alerts_sent += 1
 
+                    # Nettoie si trop plein
+                    if len(self.alerted_tokens) > self.max_alerted:
+                        self.alerted_tokens = set(
+                            list(self.alerted_tokens)[-250:]
+                        )
+
                     decision = self.alert_sender.decision_eng.decide(
                         analysis
                     )
 
-                    # ── Performance Tracker (v7.0) ────
+                    # Performance Tracker
                     self.perf_tracker.record_alert(analysis, decision)
 
-                    # ── Position Tracker ──────────────
+                    # Position Tracker
                     if decision["action"] == "ACHÈTE":
                         self.position_tracker.add_position(
                             analysis, decision, decision["amount_eur"]
@@ -295,11 +392,26 @@ class MemeSniper:
 # ENTRY POINT
 # ═══════════════════════════════════════════════════════
 
+async def cleanup_all(bot):
+    """Ferme proprement toutes les sessions."""
+    try:
+        await bot.analyzer.close()
+        await bot.alert_sender.close()
+        await bot.position_tracker.close()
+        await bot.market_context.close()
+        await bot.alpha_tracker.close()
+        logger.info("[CLEANUP] Toutes les sessions fermées")
+    except Exception as e:
+        logger.error(f"[CLEANUP] Erreur : {e}")
+
+
 if __name__ == "__main__":
     bot = MemeSniper()
     try:
         asyncio.run(bot.run())
     except KeyboardInterrupt:
         logger.info("👋 Bot arrêté (Ctrl+C)")
+        asyncio.run(cleanup_all(bot))
     except Exception as e:
         logger.error(f"💥 Erreur fatale : {e}")
+        asyncio.run(cleanup_all(bot))
