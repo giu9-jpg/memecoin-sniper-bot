@@ -1,4 +1,4 @@
-# modules/whale_inflow.py — v8.0
+# modules/whale_inflow.py — v9.0
 # Détecte les gros achats (inflows) sur les tokens
 
 import time
@@ -19,7 +19,8 @@ class WhaleInflowTracker:
             rpc_url.split("api-key=")[-1]
             if "api-key=" in rpc_url else ""
         )
-        self.whale_buys = {}   # token → liste de gros achats
+        self.cache    = {}   # token → (timestamp, result)
+        self.CACHE_TTL = 300  # 5 min de cache
 
         # Seuils en USD
         self.WHALE_MIN     = 1_000
@@ -38,14 +39,20 @@ class WhaleInflowTracker:
         self, token_address: str
     ) -> dict:
         """Vérifie les gros achats récents sur un token."""
+
+        # ── Cache pour éviter spam API ────────────────
+        cached = self.cache.get(token_address)
+        if cached:
+            ts, result = cached
+            if time.time() - ts < self.CACHE_TTL:
+                return result
+
         if not self.api_key:
             return self._empty_result()
 
         try:
             session = await self._get_session()
-            url     = (
-                f"{HELIUS_URL}/tokens/{token_address}/transactions"
-            )
+            url = f"{HELIUS_URL}/tokens/{token_address}/transactions"
             params = {
                 "api-key": self.api_key,
                 "limit":   50,
@@ -74,9 +81,8 @@ class WhaleInflowTracker:
                 if tx.get("timestamp", 0) < cutoff:
                     continue
 
-                # Extrait le montant USD
                 amount_usd = self._extract_buy_amount(tx, token_address)
-                if not amount_usd:
+                if not amount_usd or amount_usd < 100:
                     continue
 
                 total_buy += amount_usd
@@ -85,36 +91,34 @@ class WhaleInflowTracker:
                     giga_whales.append({
                         "amount":    amount_usd,
                         "timestamp": tx.get("timestamp", 0),
-                        "wallet":    tx.get("feePayer", "unknown"),
                     })
                 elif amount_usd >= self.WHALE_MIN:
                     whales.append({
                         "amount":    amount_usd,
                         "timestamp": tx.get("timestamp", 0),
-                        "wallet":    tx.get("feePayer", "unknown"),
                     })
 
-            # Calcul score bonus
-            bonus = 0.0
+            # ── Calcul bonus ──────────────────────────
+            bonus   = 0.0
             message = ""
 
             if len(giga_whales) >= 2:
-                bonus = 4.0
-                message = f"🚨 {len(giga_whales)} GIGA WHALES achètent !"
+                bonus   = 4.0
+                message = f"🚨 {len(giga_whales)} GIGA WHALES !"
             elif len(giga_whales) == 1:
-                bonus = 3.0
-                message = f"🐋 GIGA WHALE : ${giga_whales[0]['amount']:,.0f}"
+                bonus   = 3.0
+                message = f"🐋 GIGA : ${giga_whales[0]['amount']:,.0f}"
             elif len(whales) >= 5:
-                bonus = 2.5
+                bonus   = 2.5
                 message = f"🐋 {len(whales)} whales détectées"
             elif len(whales) >= 3:
-                bonus = 1.5
+                bonus   = 1.5
                 message = f"🐋 {len(whales)} whales actives"
             elif len(whales) >= 1:
-                bonus = 1.0
+                bonus   = 1.0
                 message = f"🐋 {len(whales)} whale(s)"
 
-            return {
+            result = {
                 "has_whales":      len(whales) + len(giga_whales) > 0,
                 "whale_count":     len(whales),
                 "giga_count":      len(giga_whales),
@@ -122,6 +126,11 @@ class WhaleInflowTracker:
                 "bonus":           bonus,
                 "message":         message,
             }
+
+            # Cache
+            self.cache[token_address] = (time.time(), result)
+
+            return result
 
         except Exception as e:
             logger.debug(f"[WHALE_IN] Erreur {token_address[:8]}: {e}")
@@ -132,23 +141,25 @@ class WhaleInflowTracker:
     ) -> float:
         """Extrait le montant USD d'un achat."""
         try:
-            # Cherche dans nativeTransfers ou tokenTransfers
+            # Cherche les tokenTransfers du bon mint
+            has_token = False
             for transfer in tx.get("tokenTransfers", []):
                 if transfer.get("mint") == token_address:
-                    # Estimation en USD via prix approximatif
-                    # Note : Helius ne fournit pas toujours le prix USD
-                    # → on utilise le montant SOL comme proxy
-                    amount = float(transfer.get("tokenAmount", 0))
-                    if amount > 0:
-                        # Approximation grossière
-                        # 1 SOL ≈ $150
-                        native_amount = sum(
-                            abs(nt.get("amount", 0)) / 1e9
-                            for nt in tx.get("nativeTransfers", [])
-                        )
-                        return native_amount * 150
+                    has_token = True
+                    break
 
-            return 0
+            if not has_token:
+                return 0
+
+            # Somme des SOL natifs échangés (approximation)
+            native_amount = sum(
+                abs(nt.get("amount", 0)) / 1e9
+                for nt in tx.get("nativeTransfers", [])
+            )
+
+            # 1 SOL ≈ $150 (approximation)
+            return native_amount * 150
+
         except Exception:
             return 0
 
@@ -161,6 +172,16 @@ class WhaleInflowTracker:
             "bonus":         0,
             "message":       "",
         }
+
+    def cleanup_cache(self):
+        """Nettoie le cache."""
+        now = time.time()
+        old = [
+            addr for addr, (t, _) in self.cache.items()
+            if now - t > self.CACHE_TTL * 2
+        ]
+        for addr in old:
+            del self.cache[addr]
 
     async def close(self):
         if self.session and not self.session.closed:

@@ -1,4 +1,4 @@
-# modules/early_detector.py — v8.0
+# modules/early_detector.py — v9.0
 # Détecte les tokens ultra-early (< 5 min) avec fort potentiel
 
 import time
@@ -6,12 +6,19 @@ import aiohttp
 from utils.logger import logger
 
 
+BAD_KEYWORDS = [
+    "test", "scam", "rug", "fake",
+    "elon", "trump", "biden",   # trop cliché
+    "presale", "airdrop",
+]
+
+
 class EarlyDetector:
 
     def __init__(self):
         self.session       = None
         self.recent_tokens = {}   # token → première detection
-        self.MAX_AGE       = 300   # 5 min max
+        self.MAX_AGE       = 300  # 5 min max
 
     async def _get_session(self):
         if self.session is None or self.session.closed:
@@ -23,13 +30,21 @@ class EarlyDetector:
     # ═══════════════════════════════════════════════════
 
     async def analyze_early_token(
-        self, token_address: str, token_data: dict
-    ) -> dict | None:
+        self, token_address: str, token_data: dict = None
+    ) -> dict:
         """
         Analyse rapide pour tokens < 5 min.
-        Critères stricts car peu de données disponibles.
+        Retourne :
+        {
+            "is_early":  bool,
+            "score":     float (0-10),
+            "signals":   list[str],
+            "bonus":     float (0-3),
+            "age_sec":   int,
+        }
         """
         now = time.time()
+        token_data = token_data or {}
 
         # Enregistre première detection
         if token_address not in self.recent_tokens:
@@ -37,23 +52,28 @@ class EarlyDetector:
 
         age = now - self.recent_tokens[token_address]
 
-        # Skip si trop vieux pour l'early
-        if age > self.MAX_AGE:
-            return None
+        # ── Résultat par défaut ────────────────────────
+        result = {
+            "is_early":  age < self.MAX_AGE,
+            "score":     0.0,
+            "signals":   [],
+            "bonus":     0.0,
+            "age_sec":   int(age),
+            "message":   "",
+        }
 
-        # ── Score early (0-10) ────────────────────────
+        # Skip si trop vieux
+        if age > self.MAX_AGE:
+            return result
+
+        # ── Score early (base 5.0) ────────────────────
         score   = 5.0
         signals = []
 
-        # 1. Nom/Symbol suspect (rugs classiques)
-        name   = token_data.get("name", "").lower()
-        symbol = token_data.get("symbol", "").lower()
+        # 1. Nom/Symbol suspect
+        name   = (token_data.get("name") or "").lower()
+        symbol = (token_data.get("symbol") or "").lower()
 
-        # Blacklist de noms
-        BAD_KEYWORDS = [
-            "test", "scam", "rug", "fake",
-            "elon", "trump", "biden",   # trop cliché
-        ]
         if any(k in name or k in symbol for k in BAD_KEYWORDS):
             score -= 3.0
             signals.append("🚨 Nom suspect")
@@ -61,48 +81,48 @@ class EarlyDetector:
         # 2. Longueur du symbol
         if len(symbol) < 2 or len(symbol) > 10:
             score -= 1.0
-            signals.append(f"⚠️ Symbol étrange : {symbol}")
+            signals.append(f"⚠️ Symbol étrange")
 
-        # 3. Bonus si nom court et clean
-        if 3 <= len(symbol) <= 6 and symbol.isalpha():
+        # 3. Bonus symbol propre
+        if 3 <= len(symbol) <= 6 and symbol.replace("_", "").isalpha():
             score += 1.0
-            signals.append(f"✅ Symbol propre : {symbol}")
+            signals.append("✅ Symbol propre")
 
-        # 4. Vérifie les métadonnées (via DexScreener)
+        # 4. Vérifie les métadonnées via DexScreener
         try:
             metadata = await self._quick_check(token_address)
             if metadata:
-                # Bonus si socials présents
+                # Socials
                 if metadata.get("has_socials"):
                     score += 2.0
                     signals.append("✅ Socials présents")
 
-                # Bonus si liquidity > $5k
+                # Liquidité
                 liq = metadata.get("liquidity", 0)
                 if liq > 20_000:
                     score += 2.0
-                    signals.append(f"🔥 Liquidité solide : ${liq:,.0f}")
+                    signals.append(f"🔥 Liq solide : ${liq:,.0f}")
                 elif liq > 10_000:
                     score += 1.5
-                    signals.append(f"✅ Liquidité OK : ${liq:,.0f}")
+                    signals.append(f"✅ Liq OK : ${liq:,.0f}")
                 elif liq > 5_000:
                     score += 1.0
-                    signals.append(f"🟡 Liquidité basique : ${liq:,.0f}")
-                elif liq < 1_000:
+                    signals.append(f"🟡 Liq basique : ${liq:,.0f}")
+                elif liq > 0 and liq < 1_000:
                     score -= 2.0
-                    signals.append(f"🔴 Liquidité DANGER : ${liq:,.0f}")
+                    signals.append(f"🔴 Liq DANGER : ${liq:,.0f}")
 
-                # Bonus si volume immédiat
+                # Volume immédiat
                 vol_5m = metadata.get("volume_5m", 0)
                 if vol_5m > 50_000:
                     score += 2.5
-                    signals.append(f"🚀 Volume EXPLOSION : ${vol_5m:,.0f}")
+                    signals.append(f"🚀 Vol EXPLOSION")
                 elif vol_5m > 20_000:
                     score += 2.0
-                    signals.append(f"📈 Bon volume : ${vol_5m:,.0f}")
+                    signals.append(f"📈 Bon volume")
                 elif vol_5m > 5_000:
                     score += 1.0
-                    signals.append(f"📊 Volume OK : ${vol_5m:,.0f}")
+                    signals.append(f"📊 Vol OK")
 
                 # Buy pressure
                 txns_5m = metadata.get("txns_5m", {})
@@ -110,8 +130,8 @@ class EarlyDetector:
                 sells   = txns_5m.get("sells", 1)
                 if buys >= 20 and sells == 0:
                     score += 2.5
-                    signals.append(f"🟢 {buys} buys / 0 sells !")
-                elif buys > sells * 3:
+                    signals.append(f"🟢 {buys} buys / 0 sells")
+                elif buys > sells * 3 and buys > 5:
                     score += 1.5
                     signals.append(f"🟢 Pression : {buys}b/{sells}s")
 
@@ -121,17 +141,28 @@ class EarlyDetector:
         # Cap
         score = max(0.0, min(10.0, score))
 
-        # Retourne seulement si score interessant
-        if score >= 7.0:
-            return {
-                "address":    token_address,
-                "score":      round(score, 1),
-                "signals":    signals,
-                "age_sec":    int(age),
-                "is_early":   True,
-            }
+        # ── Bonus à appliquer au token_analyzer ──────
+        bonus   = 0.0
+        message = ""
 
-        return None
+        if score >= 8.5:
+            bonus   = 3.0
+            message = f"⚡ EARLY GEM détectée ({int(age)}s)"
+        elif score >= 7.5:
+            bonus   = 2.0
+            message = f"⚡ Early prometteur ({int(age)}s)"
+        elif score >= 6.5:
+            bonus   = 1.0
+            message = f"⚡ Early OK ({int(age)}s)"
+
+        result.update({
+            "score":   round(score, 1),
+            "signals": signals,
+            "bonus":   bonus,
+            "message": message,
+        })
+
+        return result
 
     async def _quick_check(self, address: str) -> dict:
         """Vérification rapide via DexScreener."""
@@ -160,7 +191,7 @@ class EarlyDetector:
                 key=lambda p: p.get("liquidity", {}).get("usd", 0)
             )
 
-            info = pair.get("info", {})
+            info   = pair.get("info", {})
             volume = pair.get("volume", {})
             txns   = pair.get("txns", {})
 

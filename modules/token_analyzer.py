@@ -1,5 +1,5 @@
-# modules/token_analyzer.py — v7.0
-# Score momentum + smart signals + alpha wallets + multi-timeframe
+# modules/token_analyzer.py — v9.0
+# Score momentum + smart signals + alpha wallets + MTF + early + whale inflow
 
 import aiohttp
 import asyncio
@@ -13,10 +13,17 @@ RUGCHECK_URL    = "https://api.rugcheck.xyz/v1/tokens/{address}/report/summary"
 
 class TokenAnalyzer:
 
-    def __init__(self, alpha_tracker=None):
-        self.session        = None
-        self.smart_detector = SmartSignalDetector()
-        self.alpha_tracker  = alpha_tracker   # v6.0
+    def __init__(
+        self,
+        alpha_tracker=None,
+        early_detector=None,
+        whale_inflow=None
+    ):
+        self.session         = None
+        self.smart_detector  = SmartSignalDetector()
+        self.alpha_tracker   = alpha_tracker
+        self.early_detector  = early_detector   # v9.0
+        self.whale_inflow    = whale_inflow     # v9.0
 
     async def _get_session(self):
         if self.session is None or self.session.closed:
@@ -39,7 +46,7 @@ class TokenAnalyzer:
         if isinstance(rug_data, Exception):
             rug_data = {}
 
-        # ── Extraction des données ─────────────────────
+        # ── Extraction ─────────────────────────────────
         liquidity        = dex_data.get("liquidity_usd", 0)
         volume_24h       = dex_data.get("volume_24h", 0)
         volume_6h        = dex_data.get("volume_6h", 0)
@@ -64,10 +71,6 @@ class TokenAnalyzer:
 
         score   = 5.0
         reasons = []
-
-        # ═══════════════════════════════════════════════
-        # SCORING
-        # ═══════════════════════════════════════════════
 
         # ── DISQUALIFICATIONS ─────────────────────────
         if is_honeypot:
@@ -128,7 +131,7 @@ class TokenAnalyzer:
             score -= 1.0
             reasons.append("📉 Volume en baisse")
 
-        # ── BUY/SELL RATIO ────────────────────────────
+        # ── BUY/SELL ──────────────────────────────────
         buys_5m  = txns_5m.get("buys", 0)
         sells_5m = txns_5m.get("sells", 1)
         buys_1h  = txns_1h.get("buys", 0)
@@ -170,7 +173,7 @@ class TokenAnalyzer:
             score -= 2.0
             reasons.append("🔴 DUMP")
 
-        # ── MULTI-TIMEFRAME (v7.0) ────────────────────
+        # ── MULTI-TIMEFRAME ───────────────────────────
         mtf_bonus, mtf_signal = self._analyze_multi_timeframe(
             price_change_5m, price_change_1h,
             price_change_6h, price_change_24h
@@ -181,7 +184,9 @@ class TokenAnalyzer:
                 reasons.append(mtf_signal)
 
         # ── HOLDERS ───────────────────────────────────
-        holder_signal = self._analyze_holders(holders, age_minutes, market_cap)
+        holder_signal = self._analyze_holders(
+            holders, age_minutes, market_cap
+        )
         if holder_signal == "VIRAL":
             score += 2.0
             reasons.append(f"🔥 VIRAL : {holders} holders")
@@ -228,7 +233,6 @@ class TokenAnalyzer:
             score += 0.5
             reasons.append("✅ Socials")
 
-        # Cap provisoire avant smart signals
         score = max(0.0, min(10.0, score))
 
         # ═══════════════════════════════════════════════
@@ -259,17 +263,46 @@ class TokenAnalyzer:
 
         score += smart_bonus
         for sig in smart_signals:
-            reasons.append(f"{sig.get('emoji','⚡')} {sig.get('message','')}")
+            reasons.append(
+                f"{sig.get('emoji','⚡')} {sig.get('message','')}"
+            )
 
         # ═══════════════════════════════════════════════
-        # ALPHA WALLETS — v6.0
+        # ALPHA WALLETS
         # ═══════════════════════════════════════════════
         alpha_signal = None
         if self.alpha_tracker:
-            alpha_signal = self.alpha_tracker.get_alpha_signal(token_address)
+            alpha_signal = self.alpha_tracker.get_alpha_signal(
+                token_address
+            )
             if alpha_signal["has_alpha"]:
                 score += alpha_signal["bonus"]
                 reasons.append(f"🐋 {alpha_signal['message']}")
+
+        # ═══════════════════════════════════════════════
+        # 🚀 EARLY DETECTOR (v9.0)
+        # ═══════════════════════════════════════════════
+        early_signal = None
+        if self.early_detector and age_minutes < 5:
+            early_signal = await self.early_detector.analyze_early_token(
+                token_address,
+                {"name": dex_data.get("name"), "symbol": dex_data.get("symbol")}
+            )
+            if early_signal.get("bonus", 0) > 0:
+                score += early_signal["bonus"]
+                reasons.append(early_signal["message"])
+
+        # ═══════════════════════════════════════════════
+        # 🐳 WHALE INFLOW (v9.0)
+        # ═══════════════════════════════════════════════
+        whale_inflow_signal = None
+        if self.whale_inflow:
+            whale_inflow_signal = await self.whale_inflow.check_token_inflows(
+                token_address
+            )
+            if whale_inflow_signal.get("bonus", 0) > 0:
+                score += whale_inflow_signal["bonus"]
+                reasons.append(whale_inflow_signal["message"])
 
         # Cap final
         score = max(0.0, min(10.0, score))
@@ -286,45 +319,50 @@ class TokenAnalyzer:
             "name":               dex_data.get("name", "Unknown"),
             "symbol":             dex_data.get("symbol", "???"),
             "price_usd":          price,
-            # Métriques marché
             "market_cap":         market_cap,
             "liquidity":          liquidity,
             "volume_24h":         volume_24h,
             "volume_1h":          volume_1h,
             "volume_5m":          volume_5m,
-            # Prix
             "price_change_5m":    price_change_5m,
             "price_change_1h":    price_change_1h,
             "price_change_6h":    price_change_6h,
             "price_change_24h":   price_change_24h,
-            # Communauté
             "holders":            holders,
             "age_minutes":        age_minutes,
-            # Sécurité
             "mint_renounced":     mint_renounced,
             "lp_locked":          lp_locked,
             "freeze_auth":        freeze_auth,
             "top_10_holders_pct": top10_pct,
             "is_honeypot":        is_honeypot,
-            # Signaux techniques
             "vol_acceleration":   vol_acceleration,
             "ratio_buy_5m":       ratio_5m,
             "ratio_buy_1h":       ratio_1h,
             "momentum_signal":    momentum_signal,
             "signal_type":        signal_type,
             "has_socials":        dex_data.get("has_socials", False),
-            # Score final
             "score":              round(score, 1),
             "score_reasons":      reasons,
-            # Whale / Smart
             "whale_count":        0,
             "smart_signals":      smart_signals,
             "smart_count":        smart_count,
             "has_critical":       has_critical,
             "smart_bonus":        round(smart_bonus, 1),
-            # Alpha wallets v6.0
             "alpha_signal":       alpha_signal,
-            "alpha_wallets":      alpha_signal["wallet_count"] if alpha_signal else 0,
+            "alpha_wallets":      (
+                alpha_signal["wallet_count"] if alpha_signal else 0
+            ),
+            # v9.0 - Early + Whale Inflow
+            "early_signal":       early_signal,
+            "whale_inflow":       whale_inflow_signal,
+            "whale_inflow_count": (
+                whale_inflow_signal.get("whale_count", 0)
+                if whale_inflow_signal else 0
+            ),
+            "giga_whale_count": (
+                whale_inflow_signal.get("giga_count", 0)
+                if whale_inflow_signal else 0
+            ),
         }
 
     # ═══════════════════════════════════════════════════
@@ -366,40 +404,30 @@ class TokenAnalyzer:
     def _analyze_multi_timeframe(
         self, change_5m, change_1h, change_6h, change_24h
     ) -> tuple[float, str]:
-        """
-        Détecte les patterns multi-timeframe.
-        Retourne (bonus_score, signal_name)
-        """
-        # Pattern 1 — Breakout depuis consolidation
         if (abs(change_24h) < 30
                 and abs(change_6h) < 20
                 and change_1h > 15
                 and change_5m > 5):
             return 2.5, "🎯 BREAKOUT depuis consolidation"
 
-        # Pattern 2 — Accumulation silencieuse multi-TF
         if (0 < change_24h < 100
                 and 0 < change_6h < 50
                 and 0 < change_1h < 30
                 and change_5m > 0):
             return 2.0, "💎 Accumulation multi-TF alignée"
 
-        # Pattern 3 — Momentum fort aligné tous TF
         if (change_5m > 10
                 and change_1h > 20
                 and change_6h > 30
                 and change_24h < 500):
             return 3.0, "🚀 Momentum ALIGNÉ tous TF"
 
-        # Pattern 4 — Dead cat bounce (éviter)
         if change_24h < -40 and change_1h > 10:
             return -2.0, "🔴 Dead cat bounce détecté"
 
-        # Pattern 5 — Pump épuisé
         if change_24h > 500 and change_1h < 0:
             return -1.5, "🔴 Pump épuisé"
 
-        # Pattern 6 — Early momentum
         if (0 < change_5m < 20
                 and change_1h > 5
                 and change_24h < 200):

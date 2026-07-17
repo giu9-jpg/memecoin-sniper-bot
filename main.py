@@ -1,6 +1,6 @@
-# main.py — v8.0
+# main.py — v9.0
 # Bot Sniper Memecoin Solana - Ultimate Edition
-# + Copy Trading (v8.0)
+# + Copy Trading + Early Detector + Whale Inflow
 
 import asyncio
 import time
@@ -19,6 +19,8 @@ from modules.position_tracker    import PositionTracker
 from modules.market_context      import MarketContext
 from modules.alpha_tracker       import AlphaTracker
 from modules.performance_tracker import PerformanceTracker
+from modules.early_detector      import EarlyDetector
+from modules.whale_inflow        import WhaleInflowTracker
 
 
 POLLING_INTERVAL      = 30
@@ -26,7 +28,7 @@ HEALTH_CHECK_EVERY    = 300
 POSITION_CHECK_EVERY  = 60
 MARKET_CHECK_EVERY    = 180
 ALPHA_CHECK_EVERY     = 300
-COPY_TRADING_EVERY    = 180    # 3 min — copy trading alpha
+COPY_TRADING_EVERY    = 180
 STATS_EVERY           = 3600
 MEMORY_CLEANUP_EVERY  = 1800
 MIN_SCORE             = 7.5
@@ -35,14 +37,18 @@ MIN_SCORE             = 7.5
 class MemeSniper:
 
     def __init__(self):
-        # ── v7.0 + v8.0 ───────────────────────────────
+        # ── v9.0 ──────────────────────────────────────
         self.market_context    = MarketContext()
         self.alpha_tracker     = AlphaTracker()
         self.perf_tracker      = PerformanceTracker()
+        self.early_detector    = EarlyDetector()
+        self.whale_inflow      = WhaleInflowTracker()
 
-        # ── Modules core ──────────────────────────────
+        # ── Modules core (avec injections v9.0) ──────
         self.analyzer          = TokenAnalyzer(
-            alpha_tracker=self.alpha_tracker
+            alpha_tracker=self.alpha_tracker,
+            early_detector=self.early_detector,
+            whale_inflow=self.whale_inflow,
         )
         self.alert_sender      = AlertSender(
             market_context=self.market_context
@@ -68,17 +74,17 @@ class MemeSniper:
     # ═══════════════════════════════════════════════════
     # DÉMARRAGE
     # ═══════════════════════════════════════════════════
-
     async def run(self):
-        logger.info("🚀 MemeSniper v8.0 démarré !")
+        logger.info("🚀 MemeSniper v9.0 démarré !")
         logger.info(f"   Score minimum      : {MIN_SCORE}/10")
         logger.info(f"   Smart Signals      : ACTIVÉS")
         logger.info(f"   Market Context     : ACTIF")
         logger.info(f"   Alpha Wallets      : ACTIF (20 wallets)")
-        logger.info(f"   Copy Trading       : ACTIF (v8.0)")
+        logger.info(f"   Copy Trading       : ACTIF")
+        logger.info(f"   Early Detector     : ACTIF (v9.0)")
+        logger.info(f"   Whale Inflow       : ACTIF (v9.0)")
         logger.info(f"   Performance Track  : ACTIF")
         logger.info(f"   Multi-Timeframe    : ACTIF")
-        logger.info(f"   Alertes TP/SL      : ACTIF")
 
         await self.market_context.fetch_market_data()
         sig = self.market_context.get_market_signal()
@@ -107,7 +113,7 @@ class MemeSniper:
             self._run_alpha_updater(),
             self._run_stats_reporter(),
             self._run_memory_cleanup(),
-            self._run_alpha_copy_trading(),   # v8.0
+            self._run_alpha_copy_trading(),
             return_exceptions=True
         )
 
@@ -162,21 +168,14 @@ class MemeSniper:
                 logger.error(f"[ALPHA] Erreur : {e}")
             await asyncio.sleep(ALPHA_CHECK_EVERY)
 
-    # ═══════════════════════════════════════════════════
-    # 🚀 COPY TRADING (v8.0)
-    # ═══════════════════════════════════════════════════
     async def _run_alpha_copy_trading(self):
-        """
-        Alerte IMMÉDIATE quand un alpha wallet achète.
-        Le bot analyse le token instantanément.
-        """
+        """Alerte IMMÉDIATE quand un alpha wallet achète."""
         logger.info("[COPY] 🐋 Alpha copy-trading actif (3 min)")
-        await asyncio.sleep(120)   # Attend 2 min au démarrage
+        await asyncio.sleep(120)
 
         while True:
             try:
                 async def on_alpha_buy(token, wallet, tier):
-                    """Callback quand un alpha achète."""
                     self.copy_trades += 1
                     tier_str = tier or "UNKNOWN"
 
@@ -185,21 +184,18 @@ class MemeSniper:
                         f"→ achat {token[:8]}..."
                     )
 
-                    # Analyse immédiate (pas de délai)
                     if token not in self.alerted_tokens:
                         await self._analyze_and_alert(
                             token, source=f"copy_{tier_str}"
                         )
 
-                # Lance le check avec callback
                 new_buys = await self.alpha_tracker.check_new_alpha_buys(
                     callback=on_alpha_buy
                 )
 
                 if new_buys:
                     logger.info(
-                        f"[COPY] 📊 {len(new_buys)} nouveau(x) achat(s) "
-                        f"détecté(s) ce cycle"
+                        f"[COPY] 📊 {len(new_buys)} nouveau(x) achat(s)"
                     )
 
             except Exception as e:
@@ -231,7 +227,6 @@ class MemeSniper:
             await asyncio.sleep(POSITION_CHECK_EVERY)
 
     async def _run_stats_reporter(self):
-        """Envoie les stats de performance toutes les heures."""
         await asyncio.sleep(3600)
         while True:
             try:
@@ -251,21 +246,22 @@ class MemeSniper:
             try:
                 import gc
 
-                # 1. Nettoie alpha_tracker
                 self.alpha_tracker.cleanup_old_data()
+                self.early_detector.cleanup_old()
+                self.whale_inflow.cleanup_cache()
 
-                # 2. Nettoie alerted_tokens si trop plein
                 if len(self.alerted_tokens) > self.max_alerted:
                     self.alerted_tokens = set(
                         list(self.alerted_tokens)[-250:]
                     )
 
-                # 3. Garbage collection Python
                 collected = gc.collect()
 
                 logger.info(
                     f"[MEMORY] 🧹 alerted={len(self.alerted_tokens)} | "
                     f"tokens={len(self.alpha_tracker.token_buyers)} | "
+                    f"early={len(self.early_detector.recent_tokens)} | "
+                    f"whales={len(self.whale_inflow.cache)} | "
                     f"gc={collected}"
                 )
 
@@ -335,24 +331,35 @@ class MemeSniper:
             smart_count  = analysis.get("smart_count", 0)
             has_critical = analysis.get("has_critical", False)
             alpha_count  = analysis.get("alpha_wallets", 0)
+            whale_count  = analysis.get("whale_inflow_count", 0)
+            giga_count   = analysis.get("giga_whale_count", 0)
+            early_signal = analysis.get("early_signal")
 
             critical_tag = " 🚨CRITICAL" if has_critical else ""
             alpha_tag    = f" 🐋x{alpha_count}" if alpha_count else ""
             copy_tag     = " 🚀COPY" if source.startswith("copy_") else ""
+            whale_tag    = ""
+            if giga_count > 0:
+                whale_tag = f" 🐳GIGAx{giga_count}"
+            elif whale_count > 0:
+                whale_tag = f" 🐳x{whale_count}"
+            early_tag = ""
+            if early_signal and early_signal.get("bonus", 0) > 0:
+                early_tag = " ⚡EARLY"
 
             logger.info(
                 f"[SCORE] {symbol} — {score}/10 "
                 f"| Smart:{smart_count}"
-                f"{critical_tag}{alpha_tag}{copy_tag} "
+                f"{critical_tag}{alpha_tag}{copy_tag}{whale_tag}{early_tag} "
                 f"| {source}"
             )
 
-            # ── Seuil abaissé si copy trading ────────
+            # ── Seuil abaissé pour copy trading ────
             min_score = MIN_SCORE
             if source.startswith("copy_TIER1"):
-                min_score = 6.0   # TIER1 alpha = confiance élevée
+                min_score = 6.0
             elif source.startswith("copy_TIER2"):
-                min_score = 6.5   # TIER2 = confiance moyenne
+                min_score = 6.5
 
             if score >= min_score:
                 sent = await self.alert_sender.send_alert(analysis)
@@ -360,7 +367,6 @@ class MemeSniper:
                     self.alerted_tokens.add(address)
                     self.alerts_sent += 1
 
-                    # Nettoie si trop plein
                     if len(self.alerted_tokens) > self.max_alerted:
                         self.alerted_tokens = set(
                             list(self.alerted_tokens)[-250:]
@@ -370,10 +376,8 @@ class MemeSniper:
                         analysis
                     )
 
-                    # Performance Tracker
                     self.perf_tracker.record_alert(analysis, decision)
 
-                    # Position Tracker
                     if decision["action"] == "ACHÈTE":
                         self.position_tracker.add_position(
                             analysis, decision, decision["amount_eur"]
@@ -393,13 +397,14 @@ class MemeSniper:
 # ═══════════════════════════════════════════════════════
 
 async def cleanup_all(bot):
-    """Ferme proprement toutes les sessions."""
     try:
         await bot.analyzer.close()
         await bot.alert_sender.close()
         await bot.position_tracker.close()
         await bot.market_context.close()
         await bot.alpha_tracker.close()
+        await bot.early_detector.close()
+        await bot.whale_inflow.close()
         logger.info("[CLEANUP] Toutes les sessions fermées")
     except Exception as e:
         logger.error(f"[CLEANUP] Erreur : {e}")
