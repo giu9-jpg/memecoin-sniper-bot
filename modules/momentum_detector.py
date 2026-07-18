@@ -1,12 +1,11 @@
-# modules/momentum_detector.py v1.0
+# modules/momentum_detector.py v1.1
 """
-Momentum Detector
-Détecte les tokens qui pumpent en temps réel SANS signal alpha wallet
-Utile pour capter les bull runs organiques (comme HOME +1210%)
+Momentum Detector v1.1 — Seuils CALIBRÉS
+Détecte les tokens qui pumpent en temps réel
+Version plus agressive pour capter les tokens comme NEEGY (+443%)
 
 Sources : DexScreener
 Scan    : 60 secondes
-Alertes : séparées des alertes normales (marquées MOMENTUM)
 """
 
 import aiohttp
@@ -20,29 +19,25 @@ logger = get_logger("momentum")
 class MomentumDetector:
 
     # ════════════════════════════════════════
-    # SEUILS DE DÉTECTION
+    # SEUILS DE DÉTECTION v1.1 (baissés)
     # ════════════════════════════════════════
     THRESHOLDS = {
-        "5m":  100,   # +100% en 5 min
-        "1h":  200,   # +200% en 1h
-        "6h":  500,   # +500% en 6h
-        "24h": 1000,  # +1000% en 24h
+        "5m":  50,    # +50% en 5 min (avant 100)
+        "1h":  100,   # +100% en 1h (avant 200)
+        "6h":  200,   # +200% en 6h (avant 500)
+        "24h": 300,   # +300% en 24h (avant 1000)
     }
 
     # Filtres sécurité minimum
     MIN_LIQUIDITY = 10_000    # $10K liquidité
-    MIN_HOLDERS   = 200       # 200 holders
-    MIN_VOLUME    = 50_000    # $50K volume 24h
-    MIN_TXNS_1H   = 100       # 100 transactions/1h
+    MIN_HOLDERS   = 200       # 200 holders (pas vérifié en pratique)
+    MIN_VOLUME    = 100_000   # $100K volume 24h
+    MIN_TXNS_1H   = 50        # 50 txns/1h (avant 100)
 
     # Anti-doublon
-    ALERT_COOLDOWN = 3600     # 1h avant réalerte du même token
+    ALERT_COOLDOWN = 3600     # 1h avant réalerte
 
     def __init__(self, alert_callback):
-        """
-        alert_callback : fonction async appelée quand momentum détecté
-                         signature : callback(token_data)
-        """
         self.alert_callback = alert_callback
         self.session        = None
         self.running        = False
@@ -54,7 +49,13 @@ class MomentumDetector:
         """Démarre la boucle de scan"""
         self.session = aiohttp.ClientSession()
         self.running = True
-        logger.info("🔥 MomentumDetector démarré (scan 60s)")
+        logger.info("🔥 MomentumDetector v1.1 démarré (scan 60s)")
+        logger.info(
+            f"   Seuils : 5m={self.THRESHOLDS['5m']}% | "
+            f"1h={self.THRESHOLDS['1h']}% | "
+            f"6h={self.THRESHOLDS['6h']}% | "
+            f"24h={self.THRESHOLDS['24h']}%"
+        )
         asyncio.create_task(self._scan_loop())
 
     async def stop(self):
@@ -75,31 +76,44 @@ class MomentumDetector:
             await asyncio.sleep(60)
 
     async def _scan_dexscreener(self):
-        """Scan DexScreener pour les tokens Solana avec momentum"""
-        try:
-            # Endpoint DexScreener : top gainers Solana
-            url = "https://api.dexscreener.com/latest/dex/search?q=SOL"
+        """Scan DexScreener via 3 endpoints pour maximiser la couverture"""
 
-            async with self.session.get(url, timeout=10) as r:
-                if r.status != 200:
-                    return
-                data = await r.json()
+        # 3 endpoints pour chopper différentes catégories de tokens
+        endpoints = [
+            "https://api.dexscreener.com/latest/dex/search?q=SOL",
+            "https://api.dexscreener.com/latest/dex/search?q=raydium",
+            "https://api.dexscreener.com/latest/dex/search?q=pump",
+        ]
 
-            pairs = data.get("pairs", [])
-            if not pairs:
-                return
+        all_pairs = []
+        seen_mints = set()
 
-            # Filtre : uniquement Solana
-            solana_pairs = [p for p in pairs if p.get("chainId") == "solana"]
-            self.tokens_scanned += len(solana_pairs)
+        for url in endpoints:
+            try:
+                async with self.session.get(url, timeout=10) as r:
+                    if r.status != 200:
+                        continue
+                    data = await r.json()
 
-            for pair in solana_pairs:
-                await self._check_momentum(pair)
+                pairs = data.get("pairs", [])
+                for p in pairs:
+                    if p.get("chainId") != "solana":
+                        continue
+                    mint = p.get("baseToken", {}).get("address")
+                    if mint and mint not in seen_mints:
+                        seen_mints.add(mint)
+                        all_pairs.append(p)
 
-        except asyncio.TimeoutError:
-            logger.debug("Momentum : timeout DexScreener")
-        except Exception as e:
-            logger.error(f"Momentum scan error : {e}")
+            except asyncio.TimeoutError:
+                logger.debug(f"Momentum : timeout sur {url}")
+            except Exception as e:
+                logger.debug(f"Momentum endpoint error : {e}")
+
+        self.tokens_scanned += len(all_pairs)
+        logger.debug(f"🔥 Momentum : {len(all_pairs)} pairs Solana scannés")
+
+        for pair in all_pairs:
+            await self._check_momentum(pair)
 
     async def _check_momentum(self, pair: dict):
         """Vérifie si un pair a du momentum et déclenche une alerte"""
@@ -143,7 +157,7 @@ class MomentumDetector:
             # ════════════════════════════════════════
             # DÉTECTION DU MOMENTUM
             # ════════════════════════════════════════
-            triggered = None
+            triggered   = None
             trigger_pct = 0
 
             if change_5m  >= self.THRESHOLDS["5m"]:
@@ -192,7 +206,8 @@ class MomentumDetector:
             logger.info(
                 f"🔥 MOMENTUM détecté : ${symbol} "
                 f"+{trigger_pct:.0f}% en {triggered} | "
-                f"MC ${mc/1000:.0f}K | Liq ${liquidity/1000:.0f}K"
+                f"MC ${mc/1000:.0f}K | Liq ${liquidity/1000:.0f}K | "
+                f"Vol ${volume_24h/1000:.0f}K"
             )
 
             # Callback vers main.py
