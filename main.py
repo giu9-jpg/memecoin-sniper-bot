@@ -1,17 +1,19 @@
-# main.py — v12.0 SAFETY
+# main.py — v12.0 SAFETY + COMMANDES
 # Bot Sniper Memecoin Solana - Ultimate Edition
 # + Copy Trading + Early Detector + Whale Inflow
 # + 15 Alpha Wallets sélectionnés (Cielo + GMGN)
 # + Twitter Tracker (7 comptes Nitter)
 # + Performance Tracker v7.1
 # + PumpFunMonitor v2.3 + PumpPortalWebSocket v2.1
-# + NOUVEAU v12.0 : TokenSafety Anti-Rug avancé
+# + TokenSafety Anti-Rug avancé
+# + NOUVEAU v12.0 : Commandes Telegram interactives
 # + PAS de trading automatique achat/vente
 
 import asyncio
 import gc
 import time
 import os
+import aiohttp
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -49,16 +51,17 @@ from config.alpha_accounts       import (
 # CONSTANTES
 # ═══════════════════════════════════════════════════════
 
-POLLING_INTERVAL     = 30     # secondes entre chaque polling
-HEALTH_CHECK_EVERY   = 300    # 5 min
-POSITION_CHECK_EVERY = 60     # 1 min
-MARKET_CHECK_EVERY   = 180    # 3 min
-ALPHA_CHECK_EVERY    = 300    # 5 min
-COPY_TRADING_EVERY   = 180    # 3 min
-TWITTER_CHECK_EVERY  = 300    # 5 min
-STATS_EVERY          = 3600   # 1h
-MEMORY_CLEANUP_EVERY = 1800   # 30 min
-MIN_SCORE            = 7.5    # Score minimum pour alerter
+POLLING_INTERVAL     = 30
+HEALTH_CHECK_EVERY   = 300
+POSITION_CHECK_EVERY = 60
+MARKET_CHECK_EVERY   = 180
+ALPHA_CHECK_EVERY    = 300
+COPY_TRADING_EVERY   = 180
+TWITTER_CHECK_EVERY  = 300
+STATS_EVERY          = 3600
+MEMORY_CLEANUP_EVERY = 1800
+COMMAND_POLL_EVERY   = 2      # v12.0: check commandes Telegram
+MIN_SCORE            = 7.5
 
 
 # ═══════════════════════════════════════════════════════
@@ -105,12 +108,13 @@ class MemeSniper:
             token_callback=self.handle_new_token_ws
         )
 
-        # ── État interne ──────────────────────────────
-        # dict {address: timestamp} — ordonné et purgeable
-        self.alerted_tokens = {}
+        # ── Session HTTP pour commandes Telegram (v12.0) ──
+        self.http_session = None
 
-        # Verrou pour éviter analyses parallèles du même token
+        # ── État interne ──────────────────────────────
+        self.alerted_tokens = {}
         self.processing_tokens = set()
+        self.paused = False  # v12.0: pause/resume
 
         self.ws_active        = False
         self.start_time       = time.time()
@@ -120,12 +124,18 @@ class MemeSniper:
         self.twitter_signals  = 0
         self.max_alerted      = 500
 
+        # ── v12.0: offset Telegram pour polling commandes
+        self.telegram_offset = 0
+
     # ═══════════════════════════════════════════════════
     # DÉMARRAGE
     # ═══════════════════════════════════════════════════
 
     async def run(self):
         """Point d'entrée principal du bot."""
+
+        # ── Session HTTP partagée (v12.0) ─────────────
+        self.http_session = aiohttp.ClientSession()
 
         # ── Démarrage TokenSafety v12.0 ───────────────
         try:
@@ -170,6 +180,7 @@ class MemeSniper:
         logger.info(f"   Multi-Timeframe    : ACTIF")
         logger.info(f"   PumpPortal WS      : ACTIF (v2.1)")
         logger.info(f"   Polling Fallback   : ACTIF (v2.3)")
+        logger.info(f"   Commandes Telegram : ACTIF (v12.0)")
         logger.info(f"   Trading Auto       : DÉSACTIVÉ")
 
         # ── Contexte marché au démarrage ──────────────
@@ -201,6 +212,13 @@ class MemeSniper:
         except Exception as e:
             logger.warning(f"   ⚠️ Message startup Telegram : {e}")
 
+        # ── Purge des vieilles commandes Telegram ─────
+        # Pour ne pas exécuter des commandes envoyées avant le démarrage
+        try:
+            await self._init_telegram_offset()
+        except Exception as e:
+            logger.warning(f"   ⚠️ Init Telegram offset : {e}")
+
         # ── Lancement de toutes les boucles ───────────
         logger.info("   ⚙️  Lancement des boucles...")
 
@@ -216,6 +234,7 @@ class MemeSniper:
             self._run_memory_cleanup(),
             self._run_alpha_copy_trading(),
             self._run_twitter_tracker(),
+            self._run_command_listener(),   # v12.0
             return_exceptions=True,
         )
 
@@ -224,11 +243,7 @@ class MemeSniper:
     # ═══════════════════════════════════════════════════
 
     async def _run_websocket(self):
-        """
-        Écoute les nouveaux tokens via WebSocket PumpPortal.
-        Si le WS tombe, ws_active passe à False.
-        Le polling prend le relais automatiquement.
-        """
+        """Écoute les nouveaux tokens via WebSocket PumpPortal."""
         try:
             self.ws_active = True
             logger.info("[WS] Démarrage PumpPortal WebSocket...")
@@ -242,10 +257,7 @@ class MemeSniper:
             logger.warning("[WS] ❌ WebSocket inactif — polling actif")
 
     async def _run_polling_fallback(self):
-        """
-        Backup polling toutes les 30s.
-        Fonctionne en parallèle du WebSocket.
-        """
+        """Backup polling toutes les 30s."""
         logger.info(f"[POLLING] Backup {POLLING_INTERVAL}s actif")
 
         while True:
@@ -286,10 +298,7 @@ class MemeSniper:
                 logger.error(f"[MARKET] Erreur : {e}")
 
     async def _run_alpha_updater(self):
-        """
-        Scan général des alpha wallets toutes les 5 minutes.
-        Populate token_buyers pour get_alpha_signal().
-        """
+        """Scan général des alpha wallets toutes les 5 minutes."""
         logger.info(f"[ALPHA] Tracker actif ({ALPHA_CHECK_EVERY}s)")
         await asyncio.sleep(60)
 
@@ -308,11 +317,7 @@ class MemeSniper:
             await asyncio.sleep(ALPHA_CHECK_EVERY)
 
     async def _run_alpha_copy_trading(self):
-        """
-        Copy trading : alerte immédiate quand un alpha wallet achète.
-        Seuil de score abaissé selon le tier du wallet.
-        Vérifie toutes les 3 minutes.
-        """
+        """Copy trading : alerte immédiate quand un alpha wallet achète."""
         logger.info(
             f"[COPY] 🐋 Alpha copy-trading actif "
             f"({COPY_TRADING_EVERY}s)"
@@ -360,11 +365,7 @@ class MemeSniper:
             await asyncio.sleep(COPY_TRADING_EVERY)
 
     async def _run_twitter_tracker(self):
-        """
-        Scan des tweets alpha toutes les 5 minutes.
-        Si un CA Solana est détecté dans un tweet → analyse immédiate.
-        Premier scan = bootstrap (pas d'alerte sur les vieux tweets).
-        """
+        """Scan des tweets alpha toutes les 5 minutes."""
         logger.info(
             f"[TWITTER] 🐦 Tracker actif ({TWITTER_CHECK_EVERY}s)"
         )
@@ -412,10 +413,7 @@ class MemeSniper:
             await asyncio.sleep(TWITTER_CHECK_EVERY)
 
     async def _run_whale_tracker(self):
-        """
-        Surveille les gros wallets Solana.
-        Si achat détecté → analyse du token immédiate.
-        """
+        """Surveille les gros wallets Solana."""
         logger.info("[WHALE] 🐋 Tracker démarré (60s)")
 
         while True:
@@ -451,12 +449,7 @@ class MemeSniper:
             await asyncio.sleep(60)
 
     async def _run_position_tracker(self):
-        """
-        Vérifie les TP/SL des positions ouvertes toutes les 60s.
-        Envoie les alertes Telegram si TP/SL atteint.
-        Ce module suit seulement les alertes/positions simulées.
-        Il n'achète/vend pas automatiquement.
-        """
+        """Vérifie les TP/SL des positions ouvertes toutes les 60s."""
         logger.info(
             f"[POSITIONS] Tracker actif ({POSITION_CHECK_EVERY}s)"
         )
@@ -475,10 +468,7 @@ class MemeSniper:
             await asyncio.sleep(POSITION_CHECK_EVERY)
 
     async def _run_stats_reporter(self):
-        """
-        Envoie un rapport de performance Telegram toutes les heures.
-        Premier envoi après 1h de fonctionnement.
-        """
+        """Envoie un rapport de performance Telegram toutes les heures."""
         logger.info(f"[STATS] Reporter actif (toutes les heures)")
         await asyncio.sleep(STATS_EVERY)
 
@@ -500,13 +490,7 @@ class MemeSniper:
             await asyncio.sleep(STATS_EVERY)
 
     async def _run_memory_cleanup(self):
-        """
-        Nettoyage mémoire toutes les 30 minutes.
-        - Purge les anciens tokens alertés
-        - Nettoie les caches internes de chaque module
-        - Force le garbage collector Python
-        Premier nettoyage après 10 min.
-        """
+        """Nettoyage mémoire toutes les 30 minutes."""
         logger.info(
             f"[MEMORY] Cleanup actif ({MEMORY_CLEANUP_EVERY}s)"
         )
@@ -551,10 +535,7 @@ class MemeSniper:
             await asyncio.sleep(MEMORY_CLEANUP_EVERY)
 
     async def _run_health_check(self):
-        """
-        Log de santé du bot toutes les 5 minutes.
-        Affiche l'état de tous les composants.
-        """
+        """Log de santé du bot toutes les 5 minutes."""
         logger.info(
             f"[HEALTH] Health check actif ({HEALTH_CHECK_EVERY}s)"
         )
@@ -564,6 +545,7 @@ class MemeSniper:
             try:
                 uptime = int((time.time() - self.start_time) / 60)
                 ws_status = "✅" if self.ws_active else "❌"
+                pause_status = "⏸ PAUSE" if self.paused else "▶️ ACTIF"
 
                 n_pos = len([
                     p for p in
@@ -579,6 +561,7 @@ class MemeSniper:
 
                 logger.info(
                     f"[HEALTH] "
+                    f"{pause_status} | "
                     f"Uptime:{uptime}min | "
                     f"WS:{ws_status} | "
                     f"Analysés:{self.tokens_analyzed} | "
@@ -599,15 +582,325 @@ class MemeSniper:
             await asyncio.sleep(HEALTH_CHECK_EVERY)
 
     # ═══════════════════════════════════════════════════
+    # COMMANDES TELEGRAM v12.0
+    # ═══════════════════════════════════════════════════
+
+    async def _init_telegram_offset(self):
+        """
+        Récupère l'offset actuel Telegram pour ignorer
+        les vieilles commandes envoyées avant le démarrage.
+        """
+        token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        if not token:
+            return
+
+        url = f"https://api.telegram.org/bot{token}/getUpdates"
+
+        try:
+            async with self.http_session.get(
+                url,
+                params={"timeout": 1},
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    updates = data.get("result", [])
+                    if updates:
+                        # Prendre le dernier + 1 pour ignorer tout
+                        self.telegram_offset = updates[-1]["update_id"] + 1
+                        logger.info(
+                            f"[CMD] Offset initialisé : "
+                            f"{self.telegram_offset} "
+                            f"({len(updates)} vieilles commandes ignorées)"
+                        )
+                    else:
+                        logger.info("[CMD] Pas de vieilles commandes")
+        except Exception as e:
+            logger.debug(f"[CMD] Init offset error: {e}")
+
+    async def _run_command_listener(self):
+        """
+        Écoute les commandes /xxx envoyées dans Telegram.
+        Polling toutes les 2 secondes.
+        """
+        logger.info(f"[CMD] 📱 Command listener actif ({COMMAND_POLL_EVERY}s)")
+
+        token   = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+
+        if not token or not chat_id:
+            logger.warning("[CMD] ❌ Credentials Telegram manquants")
+            return
+
+        url = f"https://api.telegram.org/bot{token}/getUpdates"
+
+        while True:
+            try:
+                async with self.http_session.get(
+                    url,
+                    params={
+                        "offset": self.telegram_offset,
+                        "timeout": 20,
+                    },
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+
+                        for update in data.get("result", []):
+                            self.telegram_offset = update["update_id"] + 1
+
+                            msg  = update.get("message", {})
+                            text = msg.get("text", "").strip()
+                            chat = str(msg.get("chat", {}).get("id", ""))
+
+                            # Sécurité : notre chat SEULEMENT
+                            if chat != chat_id:
+                                logger.warning(
+                                    f"[CMD] ⚠️ Commande ignorée "
+                                    f"(chat inconnu: {chat})"
+                                )
+                                continue
+
+                            if text.startswith("/"):
+                                await self._handle_command(text)
+
+            except asyncio.CancelledError:
+                break
+
+            except Exception as e:
+                logger.debug(f"[CMD] Listener error: {e}")
+                await asyncio.sleep(5)
+                continue
+
+            await asyncio.sleep(COMMAND_POLL_EVERY)
+
+    async def _handle_command(self, text: str):
+        """Route vers le bon handler selon la commande"""
+
+        text_lower = text.lower().strip()
+
+        logger.info(f"[CMD] 📥 Reçu : {text}")
+
+        # Commandes avec arguments
+        if text_lower.startswith("/check "):
+            mint = text[7:].strip()
+            await self._cmd_check(mint)
+            return
+
+        # Commandes simples
+        routes = {
+            "/status":  self._cmd_status,
+            "/stats":   self._cmd_stats,
+            "/alertes": self._cmd_alertes,
+            "/pause":   self._cmd_pause,
+            "/resume":  self._cmd_resume,
+            "/help":    self._cmd_help,
+            "/start":   self._cmd_help,
+        }
+
+        handler = routes.get(text_lower)
+
+        if handler:
+            try:
+                await handler()
+            except Exception as e:
+                logger.error(f"[CMD] Erreur handler {text}: {e}")
+                await self._send_reply(f"❌ Erreur: {e}")
+        else:
+            await self._send_reply(
+                f"❓ Commande inconnue: `{self._esc(text)}`\n"
+                f"Tape /help pour la liste"
+            )
+
+    async def _cmd_status(self):
+        """Commande /status - État du bot"""
+        uptime  = int(time.time() - self.start_time)
+        h       = uptime // 3600
+        m       = (uptime % 3600) // 60
+        s       = uptime % 60
+
+        ws_str    = "✅ Actif" if self.ws_active else "❌ Inactif"
+        pause_str = "⏸ EN PAUSE" if self.paused else "▶️ Actif"
+
+        try:
+            sig = self.market_context.get_market_signal()
+            regime = sig["regime"]
+            btc = sig["btc_change_24h"]
+        except Exception:
+            regime = "N/A"
+            btc = 0
+
+        n_pos = len([
+            p for p in self.position_tracker.positions.values()
+            if not p.get("closed")
+        ])
+
+        msg = (
+            f"🤖 *MemeSniper v12\\.0 SAFETY*\n"
+            f"━━━━━━━━━━━━━━\n\n"
+            f"⏱ Uptime: `{h}h {m}m {s}s`\n"
+            f"🔄 État: *{self._esc(pause_str)}*\n"
+            f"📡 WebSocket: {ws_str}\n"
+            f"🛡️ Anti\\-Rug: ✅ Actif\n\n"
+            f"📊 *Activité:*\n"
+            f"  Tokens analysés: `{self.tokens_analyzed}`\n"
+            f"  Alertes envoyées: `{self.alerts_sent}`\n"
+            f"  Copy trades: `{self.copy_trades}`\n"
+            f"  Twitter signals: `{self.twitter_signals}`\n"
+            f"  Positions ouvertes: `{n_pos}`\n\n"
+            f"🌍 *Marché:*\n"
+            f"  Régime: *{self._esc(regime)}*\n"
+            f"  BTC 24h: `{btc:+.1f}%`\n"
+        )
+
+        await self._send_reply(msg)
+
+    async def _cmd_stats(self):
+        """Commande /stats - Performance"""
+        try:
+            stats = self.perf_tracker.get_stats()
+
+            msg = (
+                f"📈 *Statistiques Performance*\n"
+                f"━━━━━━━━━━━━━━\n\n"
+                f"Total alertes: `{stats.get('total_alerts', 0)}`\n"
+                f"Win rate: `{stats.get('win_rate', 0):.1f}%`\n"
+                f"Wins: `{stats.get('wins', 0)}` ✅\n"
+                f"Losses: `{stats.get('losses', 0)}` ❌\n\n"
+                f"💎 *Par tier:*\n"
+                f"  Ultimate: `{stats.get('ultimate', 0)}`\n"
+                f"  Strong: `{stats.get('strong', 0)}`\n"
+                f"  Good: `{stats.get('good', 0)}`\n"
+                f"  Normal: `{stats.get('normal', 0)}`\n"
+            )
+            await self._send_reply(msg)
+        except Exception as e:
+            await self._send_reply(f"❌ Erreur stats: {self._esc(str(e))}")
+
+    async def _cmd_alertes(self):
+        """Commande /alertes - Dernières alertes"""
+        if not self.alerted_tokens:
+            await self._send_reply("📭 Aucune alerte envoyée encore")
+            return
+
+        # Trier par timestamp (récentes d'abord)
+        sorted_alerts = sorted(
+            self.alerted_tokens.items(),
+            key=lambda x: x[1] if isinstance(x[1], (int, float)) else 0,
+            reverse=True
+        )[:10]
+
+        lines = ["📋 *10 dernières alertes:*\n"]
+        lines.append("━━━━━━━━━━━━━━\n")
+
+        for i, (mint, ts) in enumerate(sorted_alerts, 1):
+            if isinstance(ts, (int, float)):
+                age = (time.time() - ts) / 60
+                if age < 60:
+                    age_str = f"{age:.0f}min"
+                elif age < 1440:
+                    age_str = f"{age/60:.1f}h"
+                else:
+                    age_str = f"{age/1440:.1f}j"
+            else:
+                age_str = "?"
+
+            short = f"{mint[:8]}\\.\\.\\.{mint[-4:]}"
+            lines.append(f"`{i}\\.` `{short}` \\- il y a {age_str}")
+
+        await self._send_reply("\n".join(lines))
+
+    async def _cmd_check(self, mint: str):
+        """Commande /check <mint> - Analyse manuelle"""
+        if not mint or len(mint) < 32:
+            await self._send_reply(
+                "❌ Format: `/check <adresse_mint>`\n"
+                "Exemple: `/check 7xKXtg2CW\\.\\.\\.`"
+            )
+            return
+
+        await self._send_reply(
+            f"🔍 Analyse de `{self._esc(mint[:16])}\\.\\.\\.` en cours\\.\\.\\."
+        )
+
+        try:
+            # Safety check
+            safety = await self.token_safety.full_safety_check(mint)
+            summary = self.token_safety.summary(safety)
+
+            # Escaper pour MarkdownV2
+            summary_esc = self._esc(summary)
+
+            msg = (
+                f"🛡️ *Résultat safety check:*\n"
+                f"━━━━━━━━━━━━━━\n"
+                f"```\n{summary_esc}\n```"
+            )
+
+            await self._send_reply(msg)
+
+        except Exception as e:
+            await self._send_reply(f"❌ Erreur: {self._esc(str(e))}")
+
+    async def _cmd_pause(self):
+        """Commande /pause - Mettre en pause"""
+        self.paused = True
+        await self._send_reply(
+            "⏸ *Bot mis en pause*\n\n"
+            "Les nouveaux tokens ne seront plus analysés\\.\n"
+            "Tape /resume pour reprendre\\."
+        )
+        logger.warning("⏸ Bot mis en pause via Telegram")
+
+    async def _cmd_resume(self):
+        """Commande /resume - Reprendre"""
+        self.paused = False
+        await self._send_reply(
+            "▶️ *Bot repris \\!*\n\n"
+            "Analyse des nouveaux tokens active\\."
+        )
+        logger.info("▶️ Bot repris via Telegram")
+
+    async def _cmd_help(self):
+        """Commande /help"""
+        msg = (
+            "🤖 *MemeSniper v12\\.0 \\- Commandes*\n"
+            "━━━━━━━━━━━━━━\n\n"
+            "📊 *Info:*\n"
+            "/status \\- État du bot en direct\n"
+            "/stats \\- Statistiques performance\n"
+            "/alertes \\- 10 dernières alertes\n\n"
+            "🔍 *Analyse:*\n"
+            "/check `<mint>` \\- Analyser un token\n"
+            "  ex: `/check 7xKXtg2CW\\.\\.\\.`\n\n"
+            "⚙️ *Contrôle:*\n"
+            "/pause \\- Mettre le bot en pause\n"
+            "/resume \\- Reprendre l'analyse\n\n"
+            "❓ /help \\- Cette aide\n"
+        )
+        await self._send_reply(msg)
+
+    async def _send_reply(self, text: str):
+        """Envoie un message Telegram simple"""
+        await self.alert_sender._send_telegram(text)
+
+    def _esc(self, text: str) -> str:
+        """Escape MarkdownV2"""
+        special = r'_*[]()~`>#+-=|{}.!'
+        return "".join(f"\\{c}" if c in special else c for c in str(text))
+
+    # ═══════════════════════════════════════════════════
     # HANDLERS TOKENS ENTRANTS
     # ═══════════════════════════════════════════════════
 
     async def handle_new_token_ws(self, token_data: dict):
-        """
-        Nouveau token détecté via WebSocket PumpPortal.
-        Attente de 10s pour laisser la liquidité s'installer
-        avant d'analyser.
-        """
+        """Nouveau token détecté via WebSocket PumpPortal."""
+
+        # v12.0: skip si en pause
+        if self.paused:
+            return
+
         address = token_data.get("address", "")
 
         if not address:
@@ -630,10 +923,12 @@ class MemeSniper:
         await self._analyze_and_alert(address, source="websocket")
 
     async def handle_new_token_polling(self, token: dict):
-        """
-        Nouveau token détecté via polling DexScreener.
-        Pas de délai car les données sont déjà disponibles.
-        """
+        """Nouveau token détecté via polling DexScreener."""
+
+        # v12.0: skip si en pause
+        if self.paused:
+            return
+
         address = (
             token.get("tokenAddress")
             or token.get("address")
@@ -659,22 +954,12 @@ class MemeSniper:
         """
         Analyse un token et envoie une alerte Telegram
         si le score dépasse le seuil requis.
-
-        Corrections v11.3 :
-        ─────────────────────────────────────────────
-        1. Verrou processing_tokens → pas d'analyses parallèles
-        2. alerted_tokens dict → purge chronologique propre
-        3. Un seul appel decide() → cohérence garantie
-        4. min_score dynamique selon la source (twitter/copy/normal)
-        5. Bonus Twitter appliqué avant le seuil
-        6. Finally → verrou toujours libéré même en cas d'erreur
-
-        Ajout v12.0 :
-        ─────────────────────────────────────────────
-        7. Safety Check anti-rug avant alerte Telegram
         """
 
         # ── Vérifications rapides ─────────────────────
+        if self.paused:  # v12.0
+            return
+
         if not address or not isinstance(address, str):
             return
 
@@ -710,8 +995,6 @@ class MemeSniper:
                 )
                 return
 
-            # Ajouter les infos safety à l'analyse.
-            # Elles pourront être utilisées plus tard dans les alertes enrichies.
             analysis["safety"] = safety
 
             # ── Extraction des métriques ──────────────
@@ -846,9 +1129,6 @@ class MemeSniper:
 
                 self.perf_tracker.record_alert(analysis, decision)
 
-                # IMPORTANT :
-                # Ceci ajoute une position au tracker interne.
-                # Ça ne déclenche PAS d'achat automatique.
                 if decision["action"] == "ACHÈTE":
                     self.position_tracker.add_position(
                         analysis,
@@ -881,10 +1161,7 @@ class MemeSniper:
     # ═══════════════════════════════════════════════════
 
     def _trim_alerted_tokens(self):
-        """
-        Purge alerted_tokens par ordre chronologique.
-        Garde uniquement les max_alerted tokens les plus récents.
-        """
+        """Purge alerted_tokens par ordre chronologique."""
         if len(self.alerted_tokens) <= self.max_alerted:
             return
 
@@ -911,15 +1188,7 @@ class MemeSniper:
 # ═══════════════════════════════════════════════════════
 
 async def cleanup_all(bot: MemeSniper):
-    """
-    Ferme proprement toutes les sessions et sauvegarde les données.
-
-    Ordre important :
-    1. flush() perf_tracker EN PREMIER
-    2. stop() WebSocket
-    3. stop() TokenSafety
-    4. close() tous les modules avec session HTTP
-    """
+    """Ferme proprement toutes les sessions et sauvegarde les données."""
     logger.info("[CLEANUP] 🛑 Arrêt en cours...")
 
     # ── 1. Sauvegarde des données ─────────────────────
@@ -945,7 +1214,15 @@ async def cleanup_all(bot: MemeSniper):
     except Exception as e:
         logger.error(f"[CLEANUP] token_safety.stop() : {e}")
 
-    # ── 4. Fermeture du pump monitor ──────────────────
+    # ── 4. Fermeture session HTTP v12.0 ───────────────
+    try:
+        if bot.http_session and not bot.http_session.closed:
+            await bot.http_session.close()
+            logger.info("[CLEANUP] ✅ HTTP session fermée")
+    except Exception as e:
+        logger.error(f"[CLEANUP] http_session.close() : {e}")
+
+    # ── 5. Fermeture du pump monitor ──────────────────
     try:
         if hasattr(bot.pump_monitor, "close"):
             await bot.pump_monitor.close()
@@ -953,7 +1230,7 @@ async def cleanup_all(bot: MemeSniper):
     except Exception as e:
         logger.error(f"[CLEANUP] pump_monitor.close() : {e}")
 
-    # ── 5. Fermeture des modules HTTP ─────────────────
+    # ── 6. Fermeture des modules HTTP ─────────────────
     modules_to_close = [
         ("analyzer",         bot.analyzer),
         ("alert_sender",     bot.alert_sender),
