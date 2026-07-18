@@ -7,7 +7,7 @@ import os
 import asyncio
 import aiohttp
 from utils.logger import logger
-from config.alpha_wallets import ALPHA_WALLETS, get_alpha_bonus, get_wallet_tier
+from config.alpha_wallets import ALPHA_WALLETS, get_wallet_bonus, get_wallet_tier
 
 
 HELIUS_URL = "https://api.helius.xyz/v0"

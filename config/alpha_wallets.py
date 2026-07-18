@@ -1,110 +1,103 @@
-# config/alpha_wallets.py — v7.0
-# Top 20 alpha wallets vérifiés sur GMGN + Cielo Finance
-# Dernière mise à jour : Juillet 2025
+"""
+Alpha Wallets - v10.0
+15 wallets sélectionnés sur données réelles Cielo + GMGN
+Dernière analyse : Juillet 2025
+"""
 
 ALPHA_WALLETS = {
 
-    # ══════════════════════════════════════════════════
-    # 🥇 TIER 1 — ÉLITE (8 wallets)
-    # Confirmés multi-plateformes ou top rank
-    # Win Rate > 70% | PnL > $100k
-    # ══════════════════════════════════════════════════
+    # ══════════════════════════════════════════
+    # TIER 1 — LES DIEUX
+    # Win Rate > 94% | Ratio Sell/Buy > 1.5x
+    # Bonus : +3.5 | Seuil copy : 5.5
+    # ══════════════════════════════════════════
     "TIER1": [
-        # ── Confirmés GMGN + Cielo (les meilleurs) ──
-        "hnu69n6P5CgYXCtUKii9wgamqtDeTVHY3TVJ6HKt7wC",
-        "gtfoTELAeEZHUgHetA6umfsCETiBMzJCN4tB2sqCgFL",
-
-        # ── Top GMGN Tier 1 ─────────────────────────
-        "C3pnJjni74HSJSE8xRjG1fcY5h5VpN4gSHXgYwnXmD83",
-        "7UaUSBDNwiQtbPrDi8piH1wKvmgymUBmkY8zkAk9jQwR",
-        "Hd5wMoiypHWRQmkus5SHu6ECH27fXVqkhg3d5rGhvLAL",
-
-        # ── Top Cielo Tier 1 ────────────────────────
+        # 94.64% WR | 5073 trades | Sell/Buy 1.91x | Max profit $197K
         "yHCxHBEaJW5tbndqC8JciSThr7U1cqLpdcsvHcx6PRe",
+        # 97.36% WR | 4631 trades | Sell/Buy 1.89x | Max DD -$700
         "8ZN71XTdVo8yRovnGLmNgW3Tgniw6A4J3JGLvPD686FP",
-
-        # ── Nouveau GMGN #1 ─────────────────────────
-        "9R6fxLZVnjuPyeX4ns6UnhwkKh9XNpUaHuJSUSyxjGQT",
-    ],
-
-    # ══════════════════════════════════════════════════
-    # 🥈 TIER 2 — CONFIRMÉS (7 wallets)
-    # Très bons traders, une seule plateforme
-    # Win Rate > 60% | PnL > $50k
-    # ══════════════════════════════════════════════════
-    "TIER2": [
-        # ── GMGN Tier 1.5 ────────────────────────────
-        "CAmNcBJ82xr1tzXrwZ6tZKwEFs26TG8kT6dJeR1bxjW9",
-
-        # ── Cielo solides ────────────────────────────
-        "7qNbdfpsVdDGmkzfhQJE1ByVqjzAuf9d2Gaoh388sZtL",
+        # 100% WR | 277 trades | Sell/Buy 3.10x | Triple ses mises
+        "Dzp1SrZ474xwGp6ZEP6cNKo39u9zeXe1YAuTkyZyv3t4",
+        # 96.53% WR | 1844 trades | Portfolio $28K | Max profit $13K
         "8i5U2uNBEuTc4zskYP14zbebDg2RSwrrG8REhEnJb97K",
-        "6qudAN2kV8mtCcYJxb5QQ6Vr15itdHHdeVbYm99NKMhy",
-
-        # ── Nouveaux GMGN ────────────────────────────
-        "9VL5LaHxAj9irfBDDhikzFRB4qZLu8Xfce3w19rNnNYZ",
-        "2zbM47wNKDfkwYD7d7iaVApaPwof8DSTZJau9UHxuqXv",
-        "FMZ44hADrhZ5AzKKqT7y2sWuZ6f55UZVqnjaqWDbWSja",
     ],
 
-    # ══════════════════════════════════════════════════
-    # 🥉 TIER 3 — PROMETTEURS (5 wallets)
-    # Bons wallets à surveiller
-    # Win Rate > 50% | PnL positif
-    # ══════════════════════════════════════════════════
-    "TIER3": [
-        # ── Nouveaux GMGN ────────────────────────────
-        "2fNPNJKE3ny6b5Vo1wdfa7J7KqYNjeyBM3PbGGSJ398r",
-        "6QyMtDxcXzTtB8VngkrjMv4pbtG1Gj1XxTuKnyDh3MoS",
-        "5cJuSDxWQzzPUNzBMTisjRJyxz5xLQV6oBfkUiP3HapT",
+    # ══════════════════════════════════════════
+    # TIER 1.5 — L'ÉLITE
+    # Win Rate > 88% | Ratio Sell/Buy > 1.5x
+    # Bonus : +2.5 | Seuil copy : 6.0
+    # ══════════════════════════════════════════
+    "TIER1_5": [
+        # 100% WR | 2325 trades | Sell/Buy 2.12x
+        "HDdZcq56muM7t3g77ViJ55FiEvyoYjQbrRNxCSUsG8er",
+        # 97.47% WR | 204 trades | Sell/Buy 1.90x
+        "6MAmqJ7aGtTReML2DezAzmRckQyFoGfKKf6gWVak7P2d",
+        # 95.29% WR | 461 trades | Portfolio $165K
+        "DjM7Tu7whh6P3pGVBfDzwXAx2zaw51GJWrJE3PwtuN7s",
+        # 88.73% WR | 573 trades | Sell/Buy 2.38x
+        "D8n8Dy6DWC9691mR4NroSA9TdxXBxDV6Rr639RapanS4",
+        # 78.11% WR | +$78K en 30j | Volume $1.5M
+        "gtfoTELAeEZHUgHetA6umfsCETiBMzJCN4tB2sqCgFL",
+    ],
 
-        # ── Cielo ────────────────────────────────────
-        "FnW6MLyu5UX1G4fYcmmBrPy46foBi6vm4GTWNZQkxUrF",
+    # ══════════════════════════════════════════
+    # TIER 2 — CONFIRMÉS
+    # Win Rate > 80% | Profitables
+    # Bonus : +1.5 | Seuil copy : 6.5
+    # ══════════════════════════════════════════
+    "TIER2": [
+        # 90.48% WR | 531 trades | Portfolio $41.6K
         "7ufmve7ZSFCzuNcKRunYrGtyb2Ka1MXzkWwf7jZhVsmL",
+        # 98.48% WR | 373 trades | Ultra safe
+        "54yAKtNUBDi4VPNzcSr6qXxA86ZYKBCiHB2MgzrfMrpK",
+        # 92.73% WR | 147 trades | Portfolio $22.8K
+        "4JotQn2ixNrXDncDWGHE9j74FjXiacF47vC3mXDzCEcp",
+        # 87.23% WR | 438 trades | +$64K PnL
+        "FnW6MLyu5UX1G4fYcmmBrPy46foBi6vm4GTWNZQkxUrF",
+        # 100% WR | 104 trades | Portfolio $48.5K
+        "32mRYcNZJfG8gFrn9gvqusUtaWekXVAVQpkc97j5M9iT",
+        # 100% WR | 313 trades | Sell/Buy 1.78x
+        "9Q18hhGJxvy16VAa8Th8Lua4WUSxnW1E1mYmqS16aPFN",
     ],
 }
 
-
-# ══════════════════════════════════════════════════════
+# ══════════════════════════════════════════
 # BONUS PAR TIER
-# ══════════════════════════════════════════════════════
+# ══════════════════════════════════════════
 TIER_BONUS = {
-    "TIER1": 3.0,
-    "TIER2": 2.0,
-    "TIER3": 1.0,
+    "TIER1":   3.5,
+    "TIER1_5": 2.5,
+    "TIER2":   1.5,
 }
 
+# ══════════════════════════════════════════
+# SEUILS COPY TRADING
+# ══════════════════════════════════════════
+COPY_TRADING_THRESHOLDS = {
+    "TIER1":   5.5,
+    "TIER1_5": 6.0,
+    "TIER2":   6.5,
+}
 
-def get_wallet_tier(wallet: str) -> str | None:
+# ══════════════════════════════════════════
+# HELPERS
+# ══════════════════════════════════════════
+def get_wallet_tier(wallet_address: str):
     for tier, wallets in ALPHA_WALLETS.items():
-        if wallet in wallets:
+        if wallet_address in wallets:
             return tier
     return None
 
+def get_wallet_bonus(wallet_address: str) -> float:
+    tier = get_wallet_tier(wallet_address)
+    return TIER_BONUS.get(tier, 0.0) if tier else 0.0
 
-def get_alpha_bonus(wallets_detected: list) -> tuple[float, str]:
-    """Calcule le bonus alpha selon les wallets détectés."""
-    if not wallets_detected:
-        return 0, ""
+def get_all_wallets() -> list:
+    all_wallets = []
+    for wallets in ALPHA_WALLETS.values():
+        all_wallets.extend(wallets)
+    return all_wallets
 
-    total_bonus = 0
-    tiers_hit   = []
-
-    for wallet in wallets_detected:
-        tier = get_wallet_tier(wallet)
-        if tier:
-            total_bonus += TIER_BONUS[tier]
-            tiers_hit.append(tier)
-
-    if len(tiers_hit) >= 3:
-        total_bonus += 2.0
-        message = f"🚨 {len(tiers_hit)} ALPHA WALLETS achètent !"
-    elif len(tiers_hit) == 2:
-        total_bonus += 1.0
-        message = f"🐋 2 alpha wallets détectés"
-    elif len(tiers_hit) == 1:
-        message = f"🐋 Alpha wallet {tiers_hit[0]}"
-    else:
-        message = ""
-
-    return min(total_bonus, 5.0), message
+def get_copy_threshold(wallet_address: str) -> float:
+    tier = get_wallet_tier(wallet_address)
+    return COPY_TRADING_THRESHOLDS.get(tier, 7.5) if tier else 7.5

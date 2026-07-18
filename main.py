@@ -1,6 +1,7 @@
-# main.py — v9.0
+# main.py — v10.0
 # Bot Sniper Memecoin Solana - Ultimate Edition
 # + Copy Trading + Early Detector + Whale Inflow
+# + 15 Alpha Wallets sélectionnés (Cielo + GMGN)
 
 import asyncio
 import time
@@ -21,6 +22,11 @@ from modules.alpha_tracker       import AlphaTracker
 from modules.performance_tracker import PerformanceTracker
 from modules.early_detector      import EarlyDetector
 from modules.whale_inflow        import WhaleInflowTracker
+from config.alpha_wallets        import (
+    ALPHA_WALLETS,
+    get_all_wallets,
+    get_copy_threshold,
+)
 
 
 POLLING_INTERVAL      = 30
@@ -37,7 +43,7 @@ MIN_SCORE             = 7.5
 class MemeSniper:
 
     def __init__(self):
-        # ── v9.0 ──────────────────────────────────────
+        # ── v10.0 ─────────────────────────────────────
         self.market_context    = MarketContext()
         self.alpha_tracker     = AlphaTracker()
         self.perf_tracker      = PerformanceTracker()
@@ -75,11 +81,17 @@ class MemeSniper:
     # DÉMARRAGE
     # ═══════════════════════════════════════════════════
     async def run(self):
-        logger.info("🚀 MemeSniper v9.0 démarré !")
+        # ── Compteur dynamique des wallets ────────────
+        total_wallets = len(get_all_wallets())
+        t1  = len(ALPHA_WALLETS.get("TIER1", []))
+        t15 = len(ALPHA_WALLETS.get("TIER1_5", []))
+        t2  = len(ALPHA_WALLETS.get("TIER2", []))
+
+        logger.info("🚀 MemeSniper v10.0 démarré !")
         logger.info(f"   Score minimum      : {MIN_SCORE}/10")
         logger.info(f"   Smart Signals      : ACTIVÉS")
         logger.info(f"   Market Context     : ACTIF")
-        logger.info(f"   Alpha Wallets      : ACTIF (20 wallets)")
+        logger.info(f"   Alpha Wallets      : ACTIF ({total_wallets} wallets | T1:{t1} T1.5:{t15} T2:{t2})")
         logger.info(f"   Copy Trading       : ACTIF")
         logger.info(f"   Early Detector     : ACTIF (v9.0)")
         logger.info(f"   Whale Inflow       : ACTIF (v9.0)")
@@ -354,12 +366,23 @@ class MemeSniper:
                 f"| {source}"
             )
 
-            # ── Seuil abaissé pour copy trading ────
+            # ── Seuil dynamique via config ────────────
             min_score = MIN_SCORE
-            if source.startswith("copy_TIER1"):
-                min_score = 6.0
-            elif source.startswith("copy_TIER2"):
-                min_score = 6.5
+            if source.startswith("copy_"):
+                # Extraire le wallet address depuis l'analysis
+                copy_wallets = analysis.get("alpha_wallet_list", [])
+                if copy_wallets:
+                    # Prend le seuil le plus bas parmi les wallets détectés
+                    thresholds = [get_copy_threshold(w) for w in copy_wallets]
+                    min_score = min(thresholds) if thresholds else MIN_SCORE
+                else:
+                    # Fallback par tier dans le source tag
+                    if "TIER1_5" in source:
+                        min_score = 6.0
+                    elif "TIER1" in source:
+                        min_score = 5.5
+                    elif "TIER2" in source:
+                        min_score = 6.5
 
             if score >= min_score:
                 sent = await self.alert_sender.send_alert(analysis)
