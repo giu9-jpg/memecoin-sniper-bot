@@ -1,4 +1,4 @@
-# main.py — v12.0 SAFETY + COMMANDES + DASHBOARD
+# main.py — v12.0 SAFETY + COMMANDES + DASHBOARD + MULTI-DEX
 # Bot Sniper Memecoin Solana - Ultimate Edition
 # + Copy Trading + Early Detector + Whale Inflow
 # + 15 Alpha Wallets sélectionnés (Cielo + GMGN)
@@ -7,7 +7,8 @@
 # + PumpFunMonitor v2.3 + PumpPortalWebSocket v2.1
 # + TokenSafety Anti-Rug avancé
 # + Commandes Telegram interactives
-# + NOUVEAU v12.0 : Dashboard Web temps réel
+# + Dashboard Web temps réel
+# + NOUVEAU v12.0 : Multi-DEX (Raydium + Birdeye)
 # + PAS de trading automatique achat/vente
 
 import asyncio
@@ -36,6 +37,7 @@ from modules.whale_inflow        import WhaleInflowTracker
 from modules.twitter_tracker     import TwitterTracker
 from modules.token_safety        import TokenSafety
 from modules.dashboard           import DashboardServer
+from modules.raydium_monitor     import RadyiumMonitor
 
 from config.alpha_wallets        import (
     ALPHA_WALLETS,
@@ -102,6 +104,9 @@ class MemeSniper:
         self.whale_tracker    = WhaleTracker()
         self.pump_monitor     = PumpFunMonitor()
 
+        # ── Multi-DEX Monitor v12.0 ───────────────────
+        self.raydium_monitor = RadyiumMonitor()
+
         self.position_tracker = PositionTracker(
             alert_sender=self.alert_sender
         )
@@ -133,6 +138,7 @@ class MemeSniper:
         self.alerts_sent      = 0
         self.copy_trades      = 0
         self.twitter_signals  = 0
+        self.raydium_tokens   = 0   # v12.0
         self.max_alerted      = 500
 
         self.telegram_offset = 0
@@ -154,6 +160,14 @@ class MemeSniper:
         except Exception as e:
             logger.error(f"❌ Impossible de démarrer TokenSafety : {e}")
             raise
+
+        # ── Démarrage RadyiumMonitor v12.0 ────────────
+        try:
+            await self.raydium_monitor.start()
+            logger.info("🔄 RadyiumMonitor v12.0 : ACTIF")
+        except Exception as e:
+            logger.error(f"❌ Impossible de démarrer RadyiumMonitor : {e}")
+            # Non fatal, on continue sans
 
         # ── Infos wallets ─────────────────────────────
         total_wallets = len(get_all_wallets())
@@ -190,6 +204,7 @@ class MemeSniper:
         logger.info(f"   Multi-Timeframe    : ACTIF")
         logger.info(f"   PumpPortal WS      : ACTIF (v2.1)")
         logger.info(f"   Polling Fallback   : ACTIF (v2.3)")
+        logger.info(f"   Multi-DEX          : ACTIF (v12.0 Raydium+Birdeye)")
         logger.info(f"   Commandes Telegram : ACTIF (v12.0)")
 
         if self.dashboard:
@@ -244,6 +259,7 @@ class MemeSniper:
         tasks = [
             self._run_websocket(),
             self._run_polling_fallback(),
+            self._run_raydium_monitor(),   # v12.0
             self._run_whale_tracker(),
             self._run_health_check(),
             self._run_position_tracker(),
@@ -297,6 +313,23 @@ class MemeSniper:
                 logger.error(f"[POLLING] Erreur : {e}")
 
             await asyncio.sleep(POLLING_INTERVAL)
+
+    async def _run_raydium_monitor(self):
+        """
+        v12.0 : Boucle RadyiumMonitor (Raydium + Birdeye).
+        Détecte les nouveaux tokens hors Pump.fun.
+        """
+        await asyncio.sleep(30)   # Délai initial
+        logger.info("[RAYDIUM] 🔄 Multi-DEX monitor démarré")
+
+        try:
+            await self.raydium_monitor.monitor_loop(
+                callback=self.handle_new_token_raydium
+            )
+        except asyncio.CancelledError:
+            logger.info("[RAYDIUM] Annulé")
+        except Exception as e:
+            logger.error(f"[RAYDIUM] Erreur fatale : {e}")
 
     async def _run_market_updater(self):
         """Met à jour le contexte marché toutes les 3 minutes."""
@@ -562,6 +595,8 @@ class MemeSniper:
                     f"{len(self.pump_monitor.seen_tokens)} | "
                     f"ws_seen="
                     f"{len(self.ws_client.seen_tokens)} | "
+                    f"raydium_seen="
+                    f"{len(self.raydium_monitor.seen_tokens)} | "
                     f"gc={collected}"
                 )
 
@@ -607,6 +642,7 @@ class MemeSniper:
                     f"Alertes:{self.alerts_sent} | "
                     f"Copy:{self.copy_trades} | "
                     f"Twitter:{self.twitter_signals} | "
+                    f"Raydium:{self.raydium_tokens} | "
                     f"Positions:{n_pos} | "
                     f"Marché:{regime} | "
                     f"Safety:✅"
@@ -780,12 +816,14 @@ class MemeSniper:
             f"🔄 État: *{self._esc(pause_str)}*\n"
             f"📡 WebSocket: {ws_str}\n"
             f"🛡️ Anti\\-Rug: ✅ Actif\n"
+            f"🔄 Multi\\-DEX: ✅ Actif\n"
             f"{dash_str}\n"
             f"📊 *Activité:*\n"
             f"  Tokens analysés: `{self.tokens_analyzed}`\n"
             f"  Alertes envoyées: `{self.alerts_sent}`\n"
             f"  Copy trades: `{self.copy_trades}`\n"
             f"  Twitter signals: `{self.twitter_signals}`\n"
+            f"  Raydium tokens: `{self.raydium_tokens}`\n"
             f"  Positions ouvertes: `{n_pos}`\n\n"
             f"🌍 *Marché:*\n"
             f"  Régime: *{self._esc(regime)}*\n"
@@ -985,6 +1023,47 @@ class MemeSniper:
 
         await self._analyze_and_alert(address, source="polling")
 
+    async def handle_new_token_raydium(self, token_data: dict):
+        """
+        v12.0 : Nouveau token détecté via Raydium/Birdeye.
+        Même pipeline que les autres sources.
+        """
+        if self.paused:
+            return
+
+        address = token_data.get("address", "") or token_data.get("mint", "")
+
+        if not address:
+            return
+
+        if address in self.alerted_tokens:
+            return
+
+        if address in self.processing_tokens:
+            return
+
+        source = token_data.get("source", "raydium")
+        name   = token_data.get("name", "?")
+        symbol = token_data.get("symbol", "?")
+        liq    = token_data.get("liquidity", 0)
+
+        self.raydium_tokens += 1
+
+        logger.info(
+            f"[RAYDIUM] 🔄 {symbol} ({name}) | "
+            f"Liq: ${liq:,.0f} | Source: {source}"
+        )
+
+        if self.dashboard:
+            self.dashboard.add_event(
+                f"Raydium: {symbol} (${liq:,.0f})"
+            )
+
+        await self._analyze_and_alert(
+            address,
+            source=f"raydium_{source}"
+        )
+
     # ═══════════════════════════════════════════════════
     # ANALYSE + ALERTE — CŒUR DU BOT
     # ═══════════════════════════════════════════════════
@@ -1024,7 +1103,6 @@ class MemeSniper:
             # ── SAFETY CHECK v12.0 ─────────────────────
             safety = await self.token_safety.full_safety_check(address)
 
-            # Notifier le dashboard
             if self.dashboard:
                 self.dashboard.record_safety(safety)
 
@@ -1081,6 +1159,9 @@ class MemeSniper:
             copy_tag     = (
                 " 🚀COPY" if source.startswith("copy_") else ""
             )
+            raydium_tag  = (
+                " 🔄RAYDIUM" if source.startswith("raydium_") else ""
+            )
 
             twitter_tag = ""
 
@@ -1108,7 +1189,7 @@ class MemeSniper:
             logger.info(
                 f"[SCORE] {symbol} — {score:.1f}/10 "
                 f"| Smart:{smart_count}"
-                f"{critical_tag}{alpha_tag}{copy_tag}"
+                f"{critical_tag}{alpha_tag}{copy_tag}{raydium_tag}"
                 f"{twitter_tag}{whale_tag}{early_tag} "
                 f"| Safety:{safety.get('score', '?')}/10 "
                 f"| src:{source}"
@@ -1191,7 +1272,6 @@ class MemeSniper:
                     f"src:{source}"
                 )
 
-                # Notifier le dashboard
                 if self.dashboard:
                     self.dashboard.add_event(
                         f"🚨 ALERTE {decision['tier']}: "
@@ -1268,7 +1348,15 @@ async def cleanup_all(bot: MemeSniper):
     except Exception as e:
         logger.error(f"[CLEANUP] token_safety.stop() : {e}")
 
-    # ── 4. Arrêt Dashboard ────────────────────────────
+    # ── 4. Arrêt RadyiumMonitor v12.0 ─────────────────
+    try:
+        if hasattr(bot, "raydium_monitor") and bot.raydium_monitor:
+            await bot.raydium_monitor.stop()
+            logger.info("[CLEANUP] ✅ RadyiumMonitor arrêté")
+    except Exception as e:
+        logger.error(f"[CLEANUP] raydium_monitor.stop() : {e}")
+
+    # ── 5. Arrêt Dashboard ────────────────────────────
     try:
         if hasattr(bot, "dashboard") and bot.dashboard:
             await bot.dashboard.stop()
@@ -1276,7 +1364,7 @@ async def cleanup_all(bot: MemeSniper):
     except Exception as e:
         logger.error(f"[CLEANUP] dashboard.stop() : {e}")
 
-    # ── 5. Fermeture session HTTP ─────────────────────
+    # ── 6. Fermeture session HTTP ─────────────────────
     try:
         if bot.http_session and not bot.http_session.closed:
             await bot.http_session.close()
@@ -1284,7 +1372,7 @@ async def cleanup_all(bot: MemeSniper):
     except Exception as e:
         logger.error(f"[CLEANUP] http_session.close() : {e}")
 
-    # ── 6. Fermeture du pump monitor ──────────────────
+    # ── 7. Fermeture du pump monitor ──────────────────
     try:
         if hasattr(bot.pump_monitor, "close"):
             await bot.pump_monitor.close()
@@ -1292,7 +1380,7 @@ async def cleanup_all(bot: MemeSniper):
     except Exception as e:
         logger.error(f"[CLEANUP] pump_monitor.close() : {e}")
 
-    # ── 7. Fermeture des modules HTTP ─────────────────
+    # ── 8. Fermeture des modules HTTP ─────────────────
     modules_to_close = [
         ("analyzer",         bot.analyzer),
         ("alert_sender",     bot.alert_sender),
