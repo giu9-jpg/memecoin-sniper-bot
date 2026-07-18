@@ -19,3 +19,8 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+positions.json
+alert_sender.log
+*.log
+__pycache__/
+*_backup.py

@@ -1,7 +1,25 @@
-requests==2.31.0
-python-dotenv==1.0.0
-websockets==12.0
+# ════════════════════════════════════════
+# MemeSniper v11.2 — Requirements
+# Python 3.10+ obligatoire
+# ════════════════════════════════════════
+
+# HTTP async
 aiohttp==3.9.1
+
+# WebSocket
+websockets==12.0
+
+# Variables d'environnement
+python-dotenv==1.0.0
+
+# Base de données async (si utilisé)
 aiosqlite==0.19.0
-python-telegram-bot==20.7
+
+# Scheduler (si utilisé)
 schedule==1.2.0
+
+# Telegram (si python-telegram-bot utilisé directement)
+python-telegram-bot==20.7
+
+# HTTP sync (pour scripts utilitaires)
+requests==2.31.0

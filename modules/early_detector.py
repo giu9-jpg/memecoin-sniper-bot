@@ -1,5 +1,7 @@
-# modules/early_detector.py — v9.0
-# Détecte les tokens ultra-early (< 5 min) avec fort potentiel
+# modules/early_detector.py — v9.1 FIXED
+# FIX : cleanup_old() et cleanup_old_data() les deux présents
+# FIX : MAX_AGE utilisé en secondes partout
+# FIX : protection si token_data est None
 
 import time
 import aiohttp
@@ -8,17 +10,18 @@ from utils.logger import logger
 
 BAD_KEYWORDS = [
     "test", "scam", "rug", "fake",
-    "elon", "trump", "biden",   # trop cliché
+    "elon", "trump", "biden",
     "presale", "airdrop",
 ]
+
+MAX_AGE_SECONDS = 300   # 5 minutes
 
 
 class EarlyDetector:
 
     def __init__(self):
         self.session       = None
-        self.recent_tokens = {}   # token → première detection
-        self.MAX_AGE       = 300  # 5 min max
+        self.recent_tokens = {}   # {address: first_seen_timestamp}
 
     async def _get_session(self):
         if self.session is None or self.session.closed:
@@ -30,65 +33,57 @@ class EarlyDetector:
     # ═══════════════════════════════════════════════════
 
     async def analyze_early_token(
-        self, token_address: str, token_data: dict = None
+        self,
+        token_address: str,
+        token_data:    dict | None = None,
     ) -> dict:
         """
         Analyse rapide pour tokens < 5 min.
-        Retourne :
-        {
-            "is_early":  bool,
-            "score":     float (0-10),
-            "signals":   list[str],
-            "bonus":     float (0-3),
-            "age_sec":   int,
-        }
+        FIX : token_data peut être None sans planter.
         """
-        now = time.time()
+        now        = time.time()
         token_data = token_data or {}
 
-        # Enregistre première detection
+        # Enregistre la première détection
         if token_address not in self.recent_tokens:
             self.recent_tokens[token_address] = now
 
         age = now - self.recent_tokens[token_address]
 
-        # ── Résultat par défaut ────────────────────────
+        # Résultat par défaut
         result = {
-            "is_early":  age < self.MAX_AGE,
-            "score":     0.0,
-            "signals":   [],
-            "bonus":     0.0,
-            "age_sec":   int(age),
-            "message":   "",
+            "is_early": age < MAX_AGE_SECONDS,
+            "score":    0.0,
+            "signals":  [],
+            "bonus":    0.0,
+            "age_sec":  int(age),
+            "message":  "",
         }
 
-        # Skip si trop vieux
-        if age > self.MAX_AGE:
+        if age > MAX_AGE_SECONDS:
             return result
 
-        # ── Score early (base 5.0) ────────────────────
         score   = 5.0
         signals = []
 
-        # 1. Nom/Symbol suspect
-        name   = (token_data.get("name") or "").lower()
-        symbol = (token_data.get("symbol") or "").lower()
+        # ── 1. Nom / Symbol ───────────────────────────
+        name   = str(token_data.get("name")   or "").lower()
+        symbol = str(token_data.get("symbol") or "").lower()
 
         if any(k in name or k in symbol for k in BAD_KEYWORDS):
             score -= 3.0
             signals.append("🚨 Nom suspect")
 
-        # 2. Longueur du symbol
-        if len(symbol) < 2 or len(symbol) > 10:
+        # ── 2. Longueur du symbol ─────────────────────
+        sym_clean = symbol.replace("_", "").replace("-", "")
+        if len(sym_clean) < 2 or len(symbol) > 10:
             score -= 1.0
-            signals.append(f"⚠️ Symbol étrange")
-
-        # 3. Bonus symbol propre
-        if 3 <= len(symbol) <= 6 and symbol.replace("_", "").isalpha():
+            signals.append("⚠️ Symbol étrange")
+        elif 3 <= len(symbol) <= 6 and sym_clean.isalpha():
             score += 1.0
             signals.append("✅ Symbol propre")
 
-        # 4. Vérifie les métadonnées via DexScreener
+        # ── 3. Check rapide DexScreener ───────────────
         try:
             metadata = await self._quick_check(token_address)
             if metadata:
@@ -98,7 +93,7 @@ class EarlyDetector:
                     signals.append("✅ Socials présents")
 
                 # Liquidité
-                liq = metadata.get("liquidity", 0)
+                liq = float(metadata.get("liquidity", 0) or 0)
                 if liq > 20_000:
                     score += 2.0
                     signals.append(f"🔥 Liq solide : ${liq:,.0f}")
@@ -108,40 +103,40 @@ class EarlyDetector:
                 elif liq > 5_000:
                     score += 1.0
                     signals.append(f"🟡 Liq basique : ${liq:,.0f}")
-                elif liq > 0 and liq < 1_000:
+                elif 0 < liq < 1_000:
                     score -= 2.0
                     signals.append(f"🔴 Liq DANGER : ${liq:,.0f}")
 
-                # Volume immédiat
-                vol_5m = metadata.get("volume_5m", 0)
+                # Volume 5m
+                vol_5m = float(metadata.get("volume_5m", 0) or 0)
                 if vol_5m > 50_000:
                     score += 2.5
-                    signals.append(f"🚀 Vol EXPLOSION")
+                    signals.append("🚀 Vol EXPLOSION")
                 elif vol_5m > 20_000:
                     score += 2.0
-                    signals.append(f"📈 Bon volume")
+                    signals.append("📈 Bon volume")
                 elif vol_5m > 5_000:
                     score += 1.0
-                    signals.append(f"📊 Vol OK")
+                    signals.append("📊 Vol OK")
 
                 # Buy pressure
-                txns_5m = metadata.get("txns_5m", {})
-                buys    = txns_5m.get("buys", 0)
-                sells   = txns_5m.get("sells", 1)
+                txns_5m = metadata.get("txns_5m", {}) or {}
+                buys    = int(txns_5m.get("buys",  0))
+                sells   = int(txns_5m.get("sells", 0))
                 if buys >= 20 and sells == 0:
                     score += 2.5
                     signals.append(f"🟢 {buys} buys / 0 sells")
-                elif buys > sells * 3 and buys > 5:
+                elif buys > 0 and buys > sells * 3:
                     score += 1.5
                     signals.append(f"🟢 Pression : {buys}b/{sells}s")
 
         except Exception as e:
-            logger.debug(f"[EARLY] Erreur check : {e}")
+            logger.debug(f"[EARLY] Erreur check DexScreener: {e}")
 
-        # Cap
+        # Cap score
         score = max(0.0, min(10.0, score))
 
-        # ── Bonus à appliquer au token_analyzer ──────
+        # ── Bonus ──────────────────────────────────────
         bonus   = 0.0
         message = ""
 
@@ -178,7 +173,7 @@ class EarlyDetector:
                     return {}
                 data = await resp.json()
 
-            pairs = data.get("pairs") or []
+            pairs     = data.get("pairs") or []
             sol_pairs = [
                 p for p in pairs
                 if p.get("chainId") == "solana"
@@ -186,14 +181,13 @@ class EarlyDetector:
             if not sol_pairs:
                 return {}
 
-            pair = max(
+            pair   = max(
                 sol_pairs,
-                key=lambda p: p.get("liquidity", {}).get("usd", 0)
+                key=lambda p: p.get("liquidity", {}).get("usd", 0),
             )
-
-            info   = pair.get("info", {})
-            volume = pair.get("volume", {})
-            txns   = pair.get("txns", {})
+            info   = pair.get("info", {}) or {}
+            volume = pair.get("volume", {}) or {}
+            txns   = pair.get("txns",   {}) or {}
 
             return {
                 "has_socials": bool(
@@ -204,18 +198,40 @@ class EarlyDetector:
                 "volume_1h":   volume.get("h1", 0),
                 "txns_5m":     txns.get("m5", {}),
             }
-        except Exception:
+
+        except Exception as e:
+            logger.debug(f"[EARLY] _quick_check erreur: {e}")
             return {}
 
+    # ═══════════════════════════════════════════════════
+    # CLEANUP
+    # FIX : les deux méthodes présentes
+    # ═══════════════════════════════════════════════════
+
     def cleanup_old(self):
-        """Nettoie les tokens > 5 min."""
+        """
+        Nettoie les tokens trop vieux.
+        Appelé par main.py _run_memory_cleanup().
+        """
         now = time.time()
         old = [
-            addr for addr, t in self.recent_tokens.items()
-            if now - t > self.MAX_AGE
+            addr for addr, ts in self.recent_tokens.items()
+            if now - ts > MAX_AGE_SECONDS
         ]
         for addr in old:
             del self.recent_tokens[addr]
+
+        if old:
+            logger.debug(
+                f"[EARLY] 🧹 {len(old)} tokens expirés supprimés"
+            )
+
+    def cleanup_old_data(self):
+        """
+        Alias pour compatibilité.
+        FIX : les deux noms fonctionnent.
+        """
+        self.cleanup_old()
 
     async def close(self):
         if self.session and not self.session.closed:

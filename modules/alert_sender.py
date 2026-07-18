@@ -1,5 +1,8 @@
-# modules/alert_sender.py — v6.0 ULTRA SIMPLE
-# Alertes Telegram claires : décision en 3 secondes
+# modules/alert_sender.py — v6.2 FIXED
+# FIX : send_alert() accepte decision en paramètre (évite double decide())
+# FIX : _send_telegram() ne plante plus avec buttons=None
+# FIX : messages Markdown échappés correctement
+# FIX : twitter_signal affiché dans le message
 
 import os
 import aiohttp
@@ -14,7 +17,9 @@ class AlertSender:
         self.chat_id        = None
         self.session        = None
         self.market_context = market_context
-        self.decision_eng   = DecisionEngine(market_context=market_context)
+        self.decision_eng   = DecisionEngine(
+            market_context=market_context
+        )
         self._load_credentials()
 
     def _load_credentials(self):
@@ -27,8 +32,9 @@ class AlertSender:
         return self.session
 
     # ═══════════════════════════════════════════════════
-    # MESSAGE DE DÉMARRAGE
+    # STARTUP
     # ═══════════════════════════════════════════════════
+
     async def send_startup_message(self) -> bool:
         self._load_credentials()
         if not self.bot_token or not self.chat_id:
@@ -36,49 +42,46 @@ class AlertSender:
             return False
 
         message = (
-            "🤖 *BOT v6.0 démarré*\n"
+            "🤖 *BOT v11\\.2 démarré*\n"
             "━━━━━━━━━━━━━━\n"
             "✅ Prêt à sniper\n"
-            "⭐ Score min : 7.5/10\n"
+            "⭐ Score min : 7\\.5/10\n"
             "💰 Capital : 100€\n"
             "🌍 Filtre macro : ON\n"
-            "🐋 Alpha wallets : ON\n\n"
-            "⏳ En attente..."
+            "🐋 Alpha wallets : ON \\(15\\)\n"
+            "🐦 Twitter : ON \\(7 comptes\\)\n"
+            "📊 Performance : ON\n\n"
+            "⏳ En attente\\.\\.\\."
         )
-
-        try:
-            session = await self._get_session()
-            url     = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-            payload = {
-                "chat_id":                  self.chat_id,
-                "text":                     message,
-                "parse_mode":               "Markdown",
-                "disable_web_page_preview": True,
-            }
-            async with session.post(
-                url, json=payload,
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as resp:
-                if resp.status == 200:
-                    logger.info("[ALERT] ✅ Message de démarrage envoyé")
-                    return True
-                return False
-        except Exception as e:
-            logger.error(f"[ALERT] Exception startup: {e}")
-            return False
+        return await self._send_telegram(message, buttons=None)
 
     # ═══════════════════════════════════════════════════
     # ENVOI PRINCIPAL
+    # FIX : accepte decision en paramètre optionnel
     # ═══════════════════════════════════════════════════
-    async def send_alert(self, token_data: dict) -> bool:
+
+    async def send_alert(
+        self,
+        token_data: dict,
+        decision:   dict | None = None,
+    ) -> bool:
+        """
+        Envoie une alerte Telegram.
+        FIX : si decision est fournie (depuis main.py), on ne rappelle
+        pas decide() pour éviter le double appel.
+        """
         self._load_credentials()
         if not self.bot_token or not self.chat_id:
             return False
 
-        decision = self.decision_eng.decide(token_data)
+        # Calcule la décision seulement si pas déjà fournie
+        if decision is None:
+            decision = self.decision_eng.decide(token_data)
 
         if decision["action"] == "IGNORE":
-            logger.info(f"[ALERT] Token IGNORÉ: {decision.get('reason','')}")
+            logger.info(
+                f"[ALERT] Token IGNORÉ: {decision.get('reason', '')}"
+            )
             return False
 
         message = self._build_message(token_data, decision)
@@ -87,31 +90,29 @@ class AlertSender:
         return await self._send_telegram(message, buttons)
 
     # ═══════════════════════════════════════════════════
-    # MESSAGE ULTRA SIMPLE
+    # CONSTRUCTION DU MESSAGE
     # ═══════════════════════════════════════════════════
+
     def _build_message(self, data: dict, decision: dict) -> str:
 
-        # ── Données ───────────────────────────────────
-        score       = data.get("score", 0)
-        name        = data.get("name", "Unknown")
-        symbol      = data.get("symbol", "???")
-        market_cap  = data.get("market_cap", 0)
-        liquidity   = data.get("liquidity", 0)
-        volume_1h   = data.get("volume_1h", 0)
-        price_1h    = data.get("price_change_1h", 0)
-        age_minutes = data.get("age_minutes", 0)
-        holders     = data.get("holders", 0)
-        vol_accel   = data.get("vol_acceleration", 1)
-        smart_count = data.get("smart_count", 0)
-        has_critical= data.get("has_critical", False)
-        alpha_count = data.get("alpha_wallets", 0)
-        price_usd   = data.get("price_usd", 0)
+        score        = data.get("score", 0)
+        name         = data.get("name", "Unknown")
+        symbol       = data.get("symbol", "???")
+        market_cap   = data.get("market_cap", 0)
+        liquidity    = data.get("liquidity", 0)
+        price_1h     = data.get("price_change_1h", 0)
+        age_minutes  = data.get("age_minutes", 0)
+        holders      = data.get("holders", 0)
+        vol_accel    = data.get("vol_acceleration", 1)
+        smart_count  = data.get("smart_count", 0)
+        has_critical = data.get("has_critical", False)
+        alpha_count  = data.get("alpha_wallets", 0)
 
-        tier        = decision.get("tier", "NORMAL")
-        amount_eur  = decision.get("amount_eur", 0)
-        profit_pct  = decision.get("expected_profit_pct", 0)
-        tp_levels   = decision.get("tp_levels", [])
-        sl_pct      = decision.get("sl_pct", 0)
+        tier       = decision.get("tier", "NORMAL")
+        amount_eur = decision.get("amount_eur", 0)
+        profit_pct = decision.get("expected_profit_pct", 0)
+        tp_levels  = decision.get("tp_levels", [])
+        sl_pct     = decision.get("sl_pct", 0)
 
         # ── Sécurité ──────────────────────────────────
         is_safe = (
@@ -121,104 +122,122 @@ class AlertSender:
         )
         safety_emoji = "✅ OK" if is_safe else "⚠️ ATTENTION"
 
-        # ── Titre selon tier ──────────────────────────
+        # ── Titre ─────────────────────────────────────
         title = self._get_title(tier, has_critical, alpha_count)
 
-        # ═══════════════════════════════════════════════
-        # CONSTRUCTION DU MESSAGE
-        # ═══════════════════════════════════════════════
+        # ── Âge formaté ───────────────────────────────
+        if age_minutes < 60:
+            age_str = f"{age_minutes:.0f}min"
+        elif age_minutes < 1440:
+            age_str = f"{age_minutes/60:.1f}h"
+        else:
+            age_str = f"{age_minutes/1440:.1f}j"
+
+        # ── Noms échappés pour Markdown ───────────────
+        name_safe   = self._escape_md(name)
+        symbol_safe = self._escape_md(symbol)
+
         lines = []
 
-        # 1. TITRE en gros
+        # 1. Titre
         lines.append(title)
-        lines.append(f"━━━━━━━━━━━━━━")
-        lines.append(f"🪙 *{name}* (${symbol})")
-        lines.append(f"")
+        lines.append("━━━━━━━━━━━━━━")
+        lines.append(f"🪙 *{name_safe}* \\(${symbol_safe}\\)")
+        lines.append("")
 
-        # 2. SCORE + MONTANT (l'essentiel)
+        # 2. Score + montant
         lines.append(f"⭐ *{score}/10*  |  💰 *{amount_eur}€*")
-        lines.append(f"🎯 Profit espéré : *+{profit_pct:.0f}%*")
-        lines.append(f"")
+        lines.append(f"🎯 Profit espéré : *\\+{profit_pct:.0f}%*")
+        lines.append("")
 
-        # 3. VENDRE À (la stratégie de sortie)
-        lines.append(f"━━━━━━━━━━━━━━")
-        lines.append(f"🎯 *VENDRE À :*")
+        # 3. Stratégie de sortie
+        lines.append("━━━━━━━━━━━━━━")
+        lines.append("🎯 *VENDRE À :*")
         if tp_levels:
             for i, tp in enumerate(tp_levels, 1):
-                mult = tp.get("multiplier", 1)
-                pct  = tp.get("sell_pct", 0)
-                note = ""
-                if i == 1:
-                    note = " *(récupère ta mise)*"
+                mult     = tp.get("multiplier", 1)
+                pct      = tp.get("sell_pct", 0)
+                note     = " _\\(récupère ta mise\\)_" if i == 1 else ""
                 lines.append(f"  x{mult}  →  {pct:.0f}%{note}")
         lines.append(f"🛑 *STOP :* {sl_pct}%")
-        lines.append(f"━━━━━━━━━━━━━━")
-        lines.append(f"")
+        lines.append("━━━━━━━━━━━━━━")
+        lines.append("")
 
-        # 4. EN BREF (métriques essentielles)
-        lines.append(f"📊 *En bref :*")
+        # 4. Métriques essentielles
+        lines.append("📊 *En bref :*")
 
-        # Liquidité + MC
         liq_str = self._fmt_number(liquidity)
         mc_str  = self._fmt_number(market_cap)
         lines.append(f"  💧 Liq: ${liq_str}  |  MC: ${mc_str}")
-
-        # Âge + Holders
-        age_str = f"{age_minutes:.0f}min" if age_minutes < 60 else f"{age_minutes/60:.1f}h"
         lines.append(f"  ⏰ {age_str}  |  👥 {holders} holders")
 
-        # Volume + Prix
-        vol_emoji = "🚀" if vol_accel >= 2 else "📊"
+        vol_emoji  = "🚀" if vol_accel >= 2 else "📊"
+        price_sign = "\\+" if price_1h >= 0 else ""
         lines.append(
             f"  {vol_emoji} Vol x{vol_accel:.1f}  |  "
-            f"Prix {'+' if price_1h >= 0 else ''}{price_1h:.0f}% (1h)"
+            f"Prix {price_sign}{price_1h:.0f}% \\(1h\\)"
         )
 
-        # Alpha wallets (si présent)
+        # Alpha wallets
         if alpha_count > 0:
-            lines.append(f"  🐋 *{alpha_count} alpha wallet(s) détecté(s)*")
+            lines.append(
+                f"  🐋 *{alpha_count} alpha wallet\\(s\\) détecté\\(s\\)*"
+            )
 
-        # Smart signals critiques
+        # Twitter signal
+        tw = data.get("twitter_signal")
+        if tw:
+            tw_user = self._escape_md(tw.get("username", ""))
+            tw_tier = self._escape_md(tw.get("best_tier", ""))
+            lines.append(f"  🐦 *@{tw_user}* \\({tw_tier}\\)")
+
+        # Smart signals
         if has_critical:
-            lines.append(f"  🚨 *SIGNAL CRITIQUE*")
+            lines.append("  🚨 *SIGNAL CRITIQUE*")
         elif smart_count >= 3:
             lines.append(f"  🧠 {smart_count} smart signals")
 
         # Contexte marché
         if self.market_context:
-            sig = self.market_context.get_market_signal()
-            regime = sig["regime"]
-            btc    = sig["btc_change_24h"]
-            emoji  = {"BULLISH": "🚀", "NEUTRAL": "😐", "BEARISH": "🔴"}.get(regime, "⚪")
-            lines.append(
-                f"  🌍 Marché {emoji} *{regime}* "
-                f"(BTC {btc:+.0f}%)"
-            )
+            try:
+                sig    = self.market_context.get_market_signal()
+                regime = self._escape_md(sig["regime"])
+                btc    = sig["btc_change_24h"]
+                emoji  = {
+                    "BULLISH": "🚀",
+                    "NEUTRAL": "😐",
+                    "BEARISH": "🔴",
+                }.get(sig["regime"], "⚪")
+                btc_sign = "\\+" if btc >= 0 else ""
+                lines.append(
+                    f"  🌍 Marché {emoji} *{regime}* "
+                    f"\\(BTC {btc_sign}{btc:.0f}%\\)"
+                )
+            except Exception:
+                pass
 
-        lines.append(f"")
+        lines.append("")
 
-        # 5. SÉCURITÉ
+        # 5. Sécurité
         lines.append(f"🔒 Sécurité : *{safety_emoji}*")
 
         return "\n".join(lines)
 
     # ═══════════════════════════════════════════════════
-    # TITRE SELON QUALITÉ
+    # TITRE SELON TIER
     # ═══════════════════════════════════════════════════
-    def _get_title(self, tier: str, has_critical: bool, alpha_count: int) -> str:
-        """Titre gros et clair selon la qualité de l'opportunité."""
 
-        # Cas spéciaux (priorité)
+    def _get_title(
+        self, tier: str, has_critical: bool, alpha_count: int
+    ) -> str:
         if alpha_count >= 3:
-            return "🚨🚨🚨 *ALPHA WALLETS ACHÈTENT !*"
+            return "🚨🚨🚨 *ALPHA WALLETS ACHÈTENT \\!*"
         if alpha_count >= 2:
             return "🐋🐋 *2 BALEINES DÉTECTÉES*"
         if tier == "ULTIMATE":
-            return "💎💎💎 *ULTIMATE — ACHÈTE MAX !*"
+            return "💎💎💎 *ULTIMATE — ACHÈTE MAX \\!*"
         if has_critical:
             return "🚨 *SIGNAL CRITIQUE — ACHÈTE*"
-
-        # Tiers normaux
         titles = {
             "STRONG": "🔥🔥 *ACHÈTE — Opportunité forte*",
             "GOOD":   "🟢🟢 *ACHÈTE — Bonne opportunité*",
@@ -227,64 +246,166 @@ class AlertSender:
         return titles.get(tier, "⚪ *À examiner*")
 
     # ═══════════════════════════════════════════════════
-    # FORMAT DES NOMBRES (85000 → "85K")
+    # HELPERS
     # ═══════════════════════════════════════════════════
+
     def _fmt_number(self, num: float) -> str:
-        if num >= 1_000_000:
-            return f"{num/1_000_000:.1f}M"
-        elif num >= 1_000:
-            return f"{num/1_000:.0f}K"
-        return f"{num:.0f}"
+        """Formate un nombre : 85000 → 85K, 1200000 → 1.2M"""
+        try:
+            num = float(num or 0)
+            if num >= 1_000_000:
+                return f"{num/1_000_000:.1f}M"
+            elif num >= 1_000:
+                return f"{num/1_000:.0f}K"
+            return f"{num:.0f}"
+        except Exception:
+            return "0"
+
+    def _escape_md(self, text: str) -> str:
+        """
+        FIX : échappe les caractères spéciaux Telegram MarkdownV2.
+        Sans ça, les noms de tokens avec des - . ( ) etc font planter.
+        """
+        if not text:
+            return ""
+        special = r"\_*[]()~`>#+-=|{}.!"
+        result  = ""
+        for char in str(text):
+            if char in special:
+                result += "\\" + char
+            else:
+                result += char
+        return result
 
     # ═══════════════════════════════════════════════════
-    # BOUTONS TELEGRAM
+    # BOUTONS
     # ═══════════════════════════════════════════════════
-    def _build_buttons(self, data: dict, decision: dict) -> dict:
+
+    def _build_buttons(
+        self, data: dict, decision: dict
+    ) -> dict:
         address = data.get("address", "")
-
         return {
             "inline_keyboard": [
-                # Bouton principal : ACHETER
                 [{
                     "text": "🚀 ACHETER SUR PHOTON",
-                    "url":  f"https://photon-sol.tinyastro.io/en/lp/{address}"
+                    "url":  f"https://photon-sol.tinyastro.io/en/lp/{address}",
                 }],
-                # Analyse rapide
                 [
-                    {"text": "📊 Chart",   "url": f"https://dexscreener.com/solana/{address}"},
-                    {"text": "🔍 Safety", "url": f"https://rugcheck.xyz/tokens/{address}"},
+                    {
+                        "text": "📊 Chart",
+                        "url":  f"https://dexscreener.com/solana/{address}",
+                    },
+                    {
+                        "text": "🔍 Safety",
+                        "url":  f"https://rugcheck.xyz/tokens/{address}",
+                    },
                 ],
             ]
         }
 
     # ═══════════════════════════════════════════════════
     # ENVOI TELEGRAM
+    # FIX : buttons=None ne plante plus
+    # FIX : parse_mode MarkdownV2 pour meilleur rendu
     # ═══════════════════════════════════════════════════
-    async def _send_telegram(self, message: str, buttons: dict) -> bool:
+
+    async def _send_telegram(
+        self,
+        message: str,
+        buttons: dict | None = None,
+    ) -> bool:
+        """
+        Envoie un message Telegram.
+        FIX : n'inclut reply_markup que si buttons est fourni.
+        FIX : retry automatique si rate limit (429).
+        """
+        if not self.bot_token or not self.chat_id:
+            logger.error("[ALERT] Credentials manquants")
+            return False
+
         try:
             session = await self._get_session()
-            url     = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-            payload = {
+            url     = (
+                f"https://api.telegram.org/bot"
+                f"{self.bot_token}/sendMessage"
+            )
+            payload: dict = {
                 "chat_id":                  self.chat_id,
                 "text":                     message,
-                "parse_mode":               "Markdown",
-                "reply_markup":             buttons,
+                "parse_mode":               "MarkdownV2",
                 "disable_web_page_preview": True,
             }
-            async with session.post(
-                url, json=payload,
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as resp:
-                result = await resp.json()
-                if resp.status == 200 and result.get("ok"):
-                    logger.info("[ALERT] ✅ Message Telegram envoyé")
-                    return True
-                else:
-                    logger.error(f"[ALERT] ❌ Erreur Telegram: {result}")
+
+            # FIX : n'ajoute reply_markup QUE si buttons est fourni
+            if buttons:
+                payload["reply_markup"] = buttons
+
+            # FIX : retry sur rate limit
+            for attempt in range(3):
+                async with session.post(
+                    url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    result = await resp.json()
+
+                    if resp.status == 200 and result.get("ok"):
+                        logger.info("[ALERT] ✅ Message Telegram envoyé")
+                        return True
+
+                    # Rate limit → attendre et réessayer
+                    if resp.status == 429:
+                        retry_after = result.get(
+                            "parameters", {}
+                        ).get("retry_after", 5)
+                        logger.warning(
+                            f"[ALERT] ⏳ Rate limit, attente "
+                            f"{retry_after}s (tentative {attempt+1}/3)"
+                        )
+                        import asyncio
+                        await asyncio.sleep(retry_after)
+                        continue
+
+                    # Erreur Markdown → fallback sans formatage
+                    if resp.status == 400:
+                        error_desc = result.get(
+                            "description", ""
+                        )
+                        if "can't parse" in error_desc.lower():
+                            logger.warning(
+                                "[ALERT] ⚠️ Erreur Markdown, "
+                                "retry sans formatage"
+                            )
+                            payload["parse_mode"] = ""
+                            payload["text"]       = self._strip_markdown(
+                                message
+                            )
+                            continue
+
+                    logger.error(
+                        f"[ALERT] ❌ Telegram erreur "
+                        f"{resp.status}: {result}"
+                    )
                     return False
+
+            return False
+
         except Exception as e:
             logger.error(f"[ALERT] Exception: {e}")
             return False
+
+    def _strip_markdown(self, text: str) -> str:
+        """
+        FIX : supprime tous les caractères Markdown pour le fallback.
+        Utilisé quand MarkdownV2 échoue.
+        """
+        import re
+        # Supprime les échappements MarkdownV2
+        text = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!])', r'\1', text)
+        # Supprime les balises restantes
+        text = re.sub(r'[*_`]', '', text)
+        return text
 
     async def close(self):
         if self.session and not self.session.closed:
