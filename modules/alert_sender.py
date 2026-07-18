@@ -1,8 +1,15 @@
-# modules/alert_sender.py — v6.2 FIXED
-# FIX : send_alert() accepte decision en paramètre (évite double decide())
-# FIX : _send_telegram() ne plante plus avec buttons=None
-# FIX : messages Markdown échappés correctement
-# FIX : twitter_signal affiché dans le message
+# modules/alert_sender.py — v6.3 v12.0
+# FIX v6.2 : send_alert() accepte decision en paramètre
+# FIX v6.2 : _send_telegram() ne plante plus avec buttons=None
+# FIX v6.2 : messages Markdown échappés correctement
+# FIX v6.2 : twitter_signal affiché dans le message
+#
+# NOUVEAU v12.0 :
+# + Score sécurité affiché (avec emoji dynamique)
+# + Warnings sécurité affichés (top 3)
+# + Bouton Jupiter ajouté (backup Photon)
+# + Bouton Solscan ajouté
+# + Bouton Twitter Search dynamique
 
 import os
 import aiohttp
@@ -42,10 +49,11 @@ class AlertSender:
             return False
 
         message = (
-            "🤖 *BOT v11\\.2 démarré*\n"
+            "🤖 *BOT v12\\.0 SAFETY démarré*\n"
             "━━━━━━━━━━━━━━\n"
             "✅ Prêt à sniper\n"
             "⭐ Score min : 7\\.5/10\n"
+            "🛡️ Anti\\-Rug : ON\n"
             "💰 Capital : 100€\n"
             "🌍 Filtre macro : ON\n"
             "🐋 Alpha wallets : ON \\(15\\)\n"
@@ -114,13 +122,33 @@ class AlertSender:
         tp_levels  = decision.get("tp_levels", [])
         sl_pct     = decision.get("sl_pct", 0)
 
-        # ── Sécurité ──────────────────────────────────
-        is_safe = (
-            not data.get("is_honeypot")
-            and not data.get("freeze_auth")
-            and data.get("top_10_holders_pct", 0) < 50
-        )
-        safety_emoji = "✅ OK" if is_safe else "⚠️ ATTENTION"
+        # ── Sécurité v12.0 ────────────────────────────
+        # Utilise le safety check si dispo, sinon fallback ancien
+        safety_data = data.get("safety", {})
+
+        if safety_data:
+            # Nouveau système v12.0 - score sécurité détaillé
+            safety_score    = safety_data.get("score", 10)
+            safety_warnings = safety_data.get("warnings", [])
+
+            if safety_score >= 8:
+                safety_emoji = "🛡️ EXCELLENT"
+            elif safety_score >= 6:
+                safety_emoji = "✅ OK"
+            elif safety_score >= 4:
+                safety_emoji = "⚠️ ATTENTION"
+            else:
+                safety_emoji = "🚨 RISQUÉ"
+        else:
+            # Fallback ancien système
+            safety_score    = 10
+            safety_warnings = []
+            is_safe = (
+                not data.get("is_honeypot")
+                and not data.get("freeze_auth")
+                and data.get("top_10_holders_pct", 0) < 50
+            )
+            safety_emoji = "✅ OK" if is_safe else "⚠️ ATTENTION"
 
         # ── Titre ─────────────────────────────────────
         title = self._get_title(tier, has_critical, alpha_count)
@@ -145,9 +173,21 @@ class AlertSender:
         lines.append(f"🪙 *{name_safe}* \\(${symbol_safe}\\)")
         lines.append("")
 
-        # 2. Score + montant
-        lines.append(f"⭐ *{score}/10*  |  💰 *{amount_eur}€*")
+        # 2. Score + Sécurité + montant  (v12.0)
+        lines.append(f"⭐ Score: *{score}/10*  |  💰 *{amount_eur}€*")
+        lines.append(
+            f"🛡️ Sécurité: *{safety_score}/10*  {safety_emoji}"
+        )
         lines.append(f"🎯 Profit espéré : *\\+{profit_pct:.0f}%*")
+
+        # Warnings sécurité si présents (v12.0)
+        if safety_warnings:
+            lines.append("")
+            lines.append("⚠️ *Points d'attention:*")
+            for warning in safety_warnings[:3]:
+                warning_safe = self._escape_md(str(warning))
+                lines.append(f"  • {warning_safe}")
+
         lines.append("")
 
         # 3. Stratégie de sortie
@@ -216,11 +256,6 @@ class AlertSender:
             except Exception:
                 pass
 
-        lines.append("")
-
-        # 5. Sécurité
-        lines.append(f"🔒 Sécurité : *{safety_emoji}*")
-
         return "\n".join(lines)
 
     # ═══════════════════════════════════════════════════
@@ -278,19 +313,38 @@ class AlertSender:
         return result
 
     # ═══════════════════════════════════════════════════
-    # BOUTONS
+    # BOUTONS v12.0
+    # + Jupiter (backup si Photon down)
+    # + Solscan (analyse on-chain)
+    # + Twitter Search (buzz check dynamique)
     # ═══════════════════════════════════════════════════
 
     def _build_buttons(
         self, data: dict, decision: dict
     ) -> dict:
         address = data.get("address", "")
+        symbol  = data.get("symbol", "")
+
+        # Bouton Twitter dynamique selon si on a un symbole
+        if symbol and symbol != "???":
+            twitter_button = {
+                "text": f"🐦 Twitter ${symbol}",
+                "url":  f"https://twitter.com/search?q=%24{symbol}&f=live",
+            }
+        else:
+            twitter_button = {
+                "text": "🐦 Twitter Search",
+                "url":  f"https://twitter.com/search?q={address}&f=live",
+            }
+
         return {
             "inline_keyboard": [
+                # Ligne 1 - Achat rapide Photon (le plus rapide)
                 [{
                     "text": "🚀 ACHETER SUR PHOTON",
                     "url":  f"https://photon-sol.tinyastro.io/en/lp/{address}",
                 }],
+                # Ligne 2 - Chart + Safety
                 [
                     {
                         "text": "📊 Chart",
@@ -301,6 +355,19 @@ class AlertSender:
                         "url":  f"https://rugcheck.xyz/tokens/{address}",
                     },
                 ],
+                # Ligne 3 - Jupiter (backup) + Solscan (v12.0)
+                [
+                    {
+                        "text": "💱 Jupiter",
+                        "url":  f"https://jup.ag/swap/SOL-{address}",
+                    },
+                    {
+                        "text": "🔎 Solscan",
+                        "url":  f"https://solscan.io/token/{address}",
+                    },
+                ],
+                # Ligne 4 - Twitter search (v12.0)
+                [twitter_button],
             ]
         }
 

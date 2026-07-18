@@ -62,3 +62,25 @@ def _build_logger() -> logging.Logger:
 
 
 logger = _build_logger()
+
+
+
+# ════════════════════════════════════════
+# COMPATIBILITÉ v12.0
+# Ajout: fonction get_logger() pour les nouveaux modules
+# ════════════════════════════════════════
+
+def get_logger(name: str = "MemeSniper") -> logging.Logger:
+    """
+    Retourne un logger enfant du logger principal
+    Compatible avec l'ancien logger global
+    
+    Usage:
+        from utils.logger import get_logger
+        logger = get_logger("mon_module")
+    """
+    if name == "MemeSniper" or not name:
+        return logger
+    # Créer un sous-logger qui hérite du parent
+    child = logger.getChild(name)
+    return child

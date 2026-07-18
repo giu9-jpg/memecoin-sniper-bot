@@ -1,11 +1,12 @@
-# main.py — v11.3 FINAL
+# main.py — v12.0 SAFETY
 # Bot Sniper Memecoin Solana - Ultimate Edition
 # + Copy Trading + Early Detector + Whale Inflow
 # + 15 Alpha Wallets sélectionnés (Cielo + GMGN)
 # + Twitter Tracker (7 comptes Nitter)
 # + Performance Tracker v7.1
 # + PumpFunMonitor v2.3 + PumpPortalWebSocket v2.1
-# + Toutes les corrections appliquées
+# + NOUVEAU v12.0 : TokenSafety Anti-Rug avancé
+# + PAS de trading automatique achat/vente
 
 import asyncio
 import gc
@@ -16,6 +17,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from utils.logger import logger
+from utils.config_loader import load_config
+
 from modules.pump_portal_ws      import PumpPortalWebSocket
 from modules.pump_fun_monitor    import PumpFunMonitor
 from modules.token_analyzer      import TokenAnalyzer
@@ -28,11 +31,14 @@ from modules.performance_tracker import PerformanceTracker
 from modules.early_detector      import EarlyDetector
 from modules.whale_inflow        import WhaleInflowTracker
 from modules.twitter_tracker     import TwitterTracker
+from modules.token_safety        import TokenSafety
+
 from config.alpha_wallets        import (
     ALPHA_WALLETS,
     get_all_wallets,
     get_copy_threshold,
 )
+
 from config.alpha_accounts       import (
     ALPHA_ACCOUNTS,
     get_all_accounts as get_all_twitter_accounts,
@@ -63,6 +69,9 @@ class MemeSniper:
 
     def __init__(self):
 
+        # ── Config v12.0 ──────────────────────────────
+        self.config = load_config()
+
         # ── Modules contexte / tracking ───────────────
         self.market_context  = MarketContext()
         self.alpha_tracker   = AlphaTracker()
@@ -71,27 +80,35 @@ class MemeSniper:
         self.whale_inflow    = WhaleInflowTracker()
         self.twitter_tracker = TwitterTracker()
 
+        # ── Module sécurité v12.0 ─────────────────────
+        self.token_safety = TokenSafety(self.config.solana_rpc_url)
+
         # ── Modules core ──────────────────────────────
         self.analyzer = TokenAnalyzer(
             alpha_tracker=self.alpha_tracker,
             early_detector=self.early_detector,
             whale_inflow=self.whale_inflow,
         )
+
         self.alert_sender = AlertSender(
             market_context=self.market_context
         )
+
         self.whale_tracker    = WhaleTracker()
         self.pump_monitor     = PumpFunMonitor()
+
         self.position_tracker = PositionTracker(
             alert_sender=self.alert_sender
         )
+
         self.ws_client = PumpPortalWebSocket(
             token_callback=self.handle_new_token_ws
         )
 
         # ── État interne ──────────────────────────────
         # dict {address: timestamp} — ordonné et purgeable
-        self.alerted_tokens    = {}
+        self.alerted_tokens = {}
+
         # Verrou pour éviter analyses parallèles du même token
         self.processing_tokens = set()
 
@@ -110,6 +127,14 @@ class MemeSniper:
     async def run(self):
         """Point d'entrée principal du bot."""
 
+        # ── Démarrage TokenSafety v12.0 ───────────────
+        try:
+            await self.token_safety.start()
+            logger.info("🛡️ TokenSafety v12.0 : ACTIF")
+        except Exception as e:
+            logger.error(f"❌ Impossible de démarrer TokenSafety : {e}")
+            raise
+
         # ── Infos wallets ─────────────────────────────
         total_wallets = len(get_all_wallets())
         t1            = len(ALPHA_WALLETS.get("TIER1",   []))
@@ -123,10 +148,11 @@ class MemeSniper:
         t3_tw         = len(ALPHA_ACCOUNTS.get("TIER3", []))
 
         # ── Logs de démarrage ─────────────────────────
-        logger.info("🚀 MemeSniper v11.3 démarré !")
+        logger.info("🚀 MemeSniper v12.0 SAFETY démarré !")
         logger.info(f"   Score minimum      : {MIN_SCORE}/10")
         logger.info(f"   Smart Signals      : ACTIVÉS")
         logger.info(f"   Market Context     : ACTIF")
+        logger.info(f"   Anti-Rug Safety    : ACTIF")
         logger.info(
             f"   Alpha Wallets      : ACTIF "
             f"({total_wallets} wallets | "
@@ -144,6 +170,7 @@ class MemeSniper:
         logger.info(f"   Multi-Timeframe    : ACTIF")
         logger.info(f"   PumpPortal WS      : ACTIF (v2.1)")
         logger.info(f"   Polling Fallback   : ACTIF (v2.3)")
+        logger.info(f"   Trading Auto       : DÉSACTIVÉ")
 
         # ── Contexte marché au démarrage ──────────────
         try:
@@ -158,7 +185,7 @@ class MemeSniper:
         except Exception as e:
             logger.warning(f"   ⚠️ Market context indisponible : {e}")
 
-        # ── Historique des performances ────────────────
+        # ── Historique des performances ───────────────
         try:
             stats = self.perf_tracker.get_stats()
             logger.info(
@@ -176,6 +203,7 @@ class MemeSniper:
 
         # ── Lancement de toutes les boucles ───────────
         logger.info("   ⚙️  Lancement des boucles...")
+
         await asyncio.gather(
             self._run_websocket(),
             self._run_polling_fallback(),
@@ -219,22 +247,28 @@ class MemeSniper:
         Fonctionne en parallèle du WebSocket.
         """
         logger.info(f"[POLLING] Backup {POLLING_INTERVAL}s actif")
+
         while True:
             try:
                 tokens = await self.pump_monitor.get_new_tokens()
                 for token in tokens:
                     await self.handle_new_token_polling(token)
+
             except asyncio.CancelledError:
                 break
+
             except Exception as e:
                 logger.error(f"[POLLING] Erreur : {e}")
+
             await asyncio.sleep(POLLING_INTERVAL)
 
     async def _run_market_updater(self):
         """Met à jour le contexte marché toutes les 3 minutes."""
         logger.info(f"[MARKET] Updater actif ({MARKET_CHECK_EVERY}s)")
+
         while True:
             await asyncio.sleep(MARKET_CHECK_EVERY)
+
             try:
                 await self.market_context.fetch_market_data()
                 sig = self.market_context.get_market_signal()
@@ -244,8 +278,10 @@ class MemeSniper:
                     f"SOL {sig['sol_change_24h']:+.1f}% | "
                     f"FG {sig['fear_greed']}"
                 )
+
             except asyncio.CancelledError:
                 break
+
             except Exception as e:
                 logger.error(f"[MARKET] Erreur : {e}")
 
@@ -255,16 +291,20 @@ class MemeSniper:
         Populate token_buyers pour get_alpha_signal().
         """
         logger.info(f"[ALPHA] Tracker actif ({ALPHA_CHECK_EVERY}s)")
-        await asyncio.sleep(60)   # Laisse le bot se stabiliser
+        await asyncio.sleep(60)
+
         while True:
             try:
                 await self.alpha_tracker.check_alpha_wallets()
                 n = len(self.alpha_tracker.token_buyers)
                 logger.info(f"[ALPHA] {n} token(s) tracké(s)")
+
             except asyncio.CancelledError:
                 break
+
             except Exception as e:
                 logger.error(f"[ALPHA] Erreur : {e}")
+
             await asyncio.sleep(ALPHA_CHECK_EVERY)
 
     async def _run_alpha_copy_trading(self):
@@ -277,21 +317,24 @@ class MemeSniper:
             f"[COPY] 🐋 Alpha copy-trading actif "
             f"({COPY_TRADING_EVERY}s)"
         )
-        await asyncio.sleep(120)   # Délai initial
+        await asyncio.sleep(120)
 
         while True:
             try:
-                # Callback appelé pour chaque nouvel achat détecté
                 async def on_alpha_buy(
-                    token: str, wallet: str, tier: str
+                    token: str,
+                    wallet: str,
+                    tier: str
                 ):
                     self.copy_trades += 1
                     tier_str = tier or "UNKNOWN"
+
                     logger.info(
                         f"[COPY] 🚨 {tier_str} "
                         f"{wallet[:8]}... → "
                         f"achat {token[:8]}..."
                     )
+
                     if token not in self.alerted_tokens:
                         await self._analyze_and_alert(
                             token,
@@ -310,6 +353,7 @@ class MemeSniper:
 
             except asyncio.CancelledError:
                 break
+
             except Exception as e:
                 logger.error(f"[COPY] Erreur : {e}")
 
@@ -324,13 +368,13 @@ class MemeSniper:
         logger.info(
             f"[TWITTER] 🐦 Tracker actif ({TWITTER_CHECK_EVERY}s)"
         )
-        await asyncio.sleep(180)   # Délai initial
+        await asyncio.sleep(180)
 
         while True:
             try:
-                # Callback appelé pour chaque nouveau signal Twitter
                 async def on_twitter_signal(signal: dict):
                     self.twitter_signals += 1
+
                     tier     = signal.get("tier", "UNKNOWN")
                     username = signal.get("username", "?")
                     symbols  = signal.get("symbols", [])
@@ -342,7 +386,6 @@ class MemeSniper:
                         f"SYM:{','.join(symbols) if symbols else '-'}"
                     )
 
-                    # Analyse chaque adresse CA détectée
                     for address in addrs:
                         if address not in self.alerted_tokens:
                             await self._analyze_and_alert(
@@ -362,6 +405,7 @@ class MemeSniper:
 
             except asyncio.CancelledError:
                 break
+
             except Exception as e:
                 logger.error(f"[TWITTER] Erreur : {e}")
 
@@ -373,45 +417,61 @@ class MemeSniper:
         Si achat détecté → analyse du token immédiate.
         """
         logger.info("[WHALE] 🐋 Tracker démarré (60s)")
+
         while True:
             try:
                 signals = await self.whale_tracker.check_whales()
+
                 for signal in signals:
                     addr = signal.get("token_address", "")
+
                     if not addr or addr in self.alerted_tokens:
                         continue
+
                     label = signal.get("whale_label", "?")
                     amt   = signal.get("amount_usd", 0)
+
                     logger.info(
                         f"[WHALE] 🐋 {label} → "
                         f"{addr[:8]}... "
                         f"(${amt:,.0f})"
                     )
+
                     await self._analyze_and_alert(
-                        addr, source="whale"
+                        addr,
+                        source="whale"
                     )
+
             except asyncio.CancelledError:
                 break
+
             except Exception as e:
                 logger.error(f"[WHALE] Erreur : {e}")
+
             await asyncio.sleep(60)
 
     async def _run_position_tracker(self):
         """
         Vérifie les TP/SL des positions ouvertes toutes les 60s.
         Envoie les alertes Telegram si TP/SL atteint.
+        Ce module suit seulement les alertes/positions simulées.
+        Il n'achète/vend pas automatiquement.
         """
         logger.info(
             f"[POSITIONS] Tracker actif ({POSITION_CHECK_EVERY}s)"
         )
-        await asyncio.sleep(30)   # Délai initial
+        await asyncio.sleep(30)
+
         while True:
             try:
                 await self.position_tracker.check_all_positions()
+
             except asyncio.CancelledError:
                 break
+
             except Exception as e:
                 logger.error(f"[POSITIONS] Erreur : {e}")
+
             await asyncio.sleep(POSITION_CHECK_EVERY)
 
     async def _run_stats_reporter(self):
@@ -420,18 +480,23 @@ class MemeSniper:
         Premier envoi après 1h de fonctionnement.
         """
         logger.info(f"[STATS] Reporter actif (toutes les heures)")
-        await asyncio.sleep(STATS_EVERY)   # Attend 1h avant premier rapport
+        await asyncio.sleep(STATS_EVERY)
+
         while True:
             try:
                 stats_msg = self.perf_tracker.get_summary_message()
                 await self.alert_sender._send_telegram(
-                    stats_msg, buttons=None
+                    stats_msg,
+                    buttons=None
                 )
                 logger.info("[STATS] 📊 Rapport horaire envoyé")
+
             except asyncio.CancelledError:
                 break
+
             except Exception as e:
                 logger.error(f"[STATS] Erreur : {e}")
+
             await asyncio.sleep(STATS_EVERY)
 
     async def _run_memory_cleanup(self):
@@ -445,22 +510,19 @@ class MemeSniper:
         logger.info(
             f"[MEMORY] Cleanup actif ({MEMORY_CLEANUP_EVERY}s)"
         )
-        await asyncio.sleep(600)   # Premier cleanup après 10 min
+        await asyncio.sleep(600)
+
         while True:
             try:
-                # ── Nettoyage des modules ──────────────
                 self.alpha_tracker.cleanup_old_data()
                 self.early_detector.cleanup_old()
                 self.whale_inflow.cleanup_cache()
                 self.twitter_tracker.cleanup_old_data()
 
-                # ── Purge alerted_tokens ───────────────
                 self._trim_alerted_tokens()
 
-                # ── GC Python ─────────────────────────
                 collected = gc.collect()
 
-                # ── Rapport mémoire ───────────────────
                 logger.info(
                     f"[MEMORY] 🧹 "
                     f"alerted={len(self.alerted_tokens)} | "
@@ -482,6 +544,7 @@ class MemeSniper:
 
             except asyncio.CancelledError:
                 break
+
             except Exception as e:
                 logger.error(f"[MEMORY] Erreur : {e}")
 
@@ -495,7 +558,8 @@ class MemeSniper:
         logger.info(
             f"[HEALTH] Health check actif ({HEALTH_CHECK_EVERY}s)"
         )
-        await asyncio.sleep(60)   # Premier check après 1 min
+        await asyncio.sleep(60)
+
         while True:
             try:
                 uptime = int((time.time() - self.start_time) / 60)
@@ -522,11 +586,13 @@ class MemeSniper:
                     f"Copy:{self.copy_trades} | "
                     f"Twitter:{self.twitter_signals} | "
                     f"Positions:{n_pos} | "
-                    f"Marché:{regime}"
+                    f"Marché:{regime} | "
+                    f"Safety:✅"
                 )
 
             except asyncio.CancelledError:
                 break
+
             except Exception as e:
                 logger.error(f"[HEALTH] Erreur : {e}")
 
@@ -543,20 +609,23 @@ class MemeSniper:
         avant d'analyser.
         """
         address = token_data.get("address", "")
+
         if not address:
             return
+
         if address in self.alerted_tokens:
             return
+
         if address in self.processing_tokens:
             return
 
         symbol = token_data.get("symbol", "???")
+
         logger.info(
             f"[WS] 🆕 Nouveau token : "
             f"{symbol} ({address[:8]}...)"
         )
 
-        # Attente pour laisser les données se propager sur DexScreener
         await asyncio.sleep(10)
         await self._analyze_and_alert(address, source="websocket")
 
@@ -570,10 +639,13 @@ class MemeSniper:
             or token.get("address")
             or token.get("baseToken", {}).get("address", "")
         )
+
         if not address:
             return
+
         if address in self.alerted_tokens:
             return
+
         if address in self.processing_tokens:
             return
 
@@ -596,13 +668,19 @@ class MemeSniper:
         4. min_score dynamique selon la source (twitter/copy/normal)
         5. Bonus Twitter appliqué avant le seuil
         6. Finally → verrou toujours libéré même en cas d'erreur
+
+        Ajout v12.0 :
+        ─────────────────────────────────────────────
+        7. Safety Check anti-rug avant alerte Telegram
         """
 
         # ── Vérifications rapides ─────────────────────
         if not address or not isinstance(address, str):
             return
+
         if address in self.alerted_tokens:
             return
+
         if address in self.processing_tokens:
             logger.debug(
                 f"[ANALYZE] Déjà en cours : {address[:8]}"
@@ -617,8 +695,24 @@ class MemeSniper:
 
             # ── Analyse complète du token ─────────────
             analysis = await self.analyzer.analyze_token(address)
+
             if not analysis:
                 return
+
+            # ── SAFETY CHECK v12.0 ─────────────────────
+            safety = await self.token_safety.full_safety_check(address)
+
+            if not safety.get("safe", True):
+                reason = safety.get("reasons", ["Unknown"])[0]
+                logger.warning(
+                    f"🚫 [SAFETY] Bloqué : "
+                    f"{address[:8]}... | {reason}"
+                )
+                return
+
+            # Ajouter les infos safety à l'analyse.
+            # Elles pourront être utilisées plus tard dans les alertes enrichies.
+            analysis["safety"] = safety
 
             # ── Extraction des métriques ──────────────
             score        = float(analysis.get("score", 0))
@@ -631,10 +725,10 @@ class MemeSniper:
             early_signal = analysis.get("early_signal")
 
             # ── Bonus Twitter ─────────────────────────
-            # Cherche d'abord par adresse, puis par symbole
             twitter_signal = (
                 self.twitter_tracker.get_token_twitter_signal(address)
             )
+
             if not twitter_signal and symbol and symbol != "???":
                 twitter_signal = (
                     self.twitter_tracker.get_symbol_twitter_signal(
@@ -643,12 +737,13 @@ class MemeSniper:
                 )
 
             if twitter_signal:
-                twitter_bonus           = float(
+                twitter_bonus = float(
                     twitter_signal.get("bonus", 0)
                 )
-                score                   = min(10.0, score + twitter_bonus)
-                analysis["score"]           = score
-                analysis["twitter_signal"]  = twitter_signal
+                score = min(10.0, score + twitter_bonus)
+
+                analysis["score"]          = score
+                analysis["twitter_signal"] = twitter_signal
 
             # ── Construction des tags pour les logs ───
             critical_tag = " 🚨CRITICAL" if has_critical else ""
@@ -658,20 +753,25 @@ class MemeSniper:
             )
 
             twitter_tag = ""
+
             if source.startswith("twitter_"):
-                tier_part   = source.split("_", 1)[-1]
+                tier_part = source.split("_", 1)[-1]
                 twitter_tag = f" 🐦{tier_part}"
+
             elif twitter_signal:
-                uname       = twitter_signal.get("username", "")[:10]
+                uname = twitter_signal.get("username", "")[:10]
                 twitter_tag = f" 🐦@{uname}"
 
             whale_tag = ""
+
             if giga_count > 0:
                 whale_tag = f" 🐳GIGAx{giga_count}"
+
             elif whale_count > 0:
                 whale_tag = f" 🐳x{whale_count}"
 
             early_tag = ""
+
             if early_signal and early_signal.get("bonus", 0) > 0:
                 early_tag = " ⚡EARLY"
 
@@ -680,6 +780,7 @@ class MemeSniper:
                 f"| Smart:{smart_count}"
                 f"{critical_tag}{alpha_tag}{copy_tag}"
                 f"{twitter_tag}{whale_tag}{early_tag} "
+                f"| Safety:{safety.get('score', '?')}/10 "
                 f"| src:{source}"
             )
 
@@ -687,7 +788,6 @@ class MemeSniper:
             min_score = MIN_SCORE
 
             if source.startswith("twitter_"):
-                # Seuil abaissé selon le tier Twitter
                 if "TIER1" in source:
                     min_score = 6.0
                 elif "TIER2" in source:
@@ -696,16 +796,16 @@ class MemeSniper:
                     min_score = 7.0
 
             elif source.startswith("copy_"):
-                # Seuil selon le tier du wallet alpha
                 copy_wallets = analysis.get("alpha_wallet_list", [])
+
                 if copy_wallets:
                     thresholds = [
                         get_copy_threshold(w)
                         for w in copy_wallets
                     ]
                     min_score = min(thresholds)
+
                 else:
-                    # Fallback par tier dans le nom de la source
                     if "TIER1_5" in source:
                         min_score = 6.0
                     elif "TIER1" in source:
@@ -733,24 +833,22 @@ class MemeSniper:
                 return
 
             # ── Envoi de l'alerte Telegram ────────────
-            # On passe decision pour éviter un second appel decide()
             sent = await self.alert_sender.send_alert(
                 analysis,
                 decision=decision,
             )
 
             if sent:
-                # Marque le token comme alerté
                 self.alerted_tokens[address] = time.time()
                 self.alerts_sent += 1
 
-                # Purge si trop d'entrées
                 self._trim_alerted_tokens()
 
-                # Enregistrement dans l'historique de performance
                 self.perf_tracker.record_alert(analysis, decision)
 
-                # Ouverture de position si action = ACHÈTE
+                # IMPORTANT :
+                # Ceci ajoute une position au tracker interne.
+                # Ça ne déclenche PAS d'achat automatique.
                 if decision["action"] == "ACHÈTE":
                     self.position_tracker.add_position(
                         analysis,
@@ -767,7 +865,6 @@ class MemeSniper:
                 )
 
         except asyncio.CancelledError:
-            # Ne pas swallow CancelledError
             raise
 
         except Exception as e:
@@ -777,7 +874,6 @@ class MemeSniper:
             )
 
         finally:
-            # Toujours libérer le verrou
             self.processing_tokens.discard(address)
 
     # ═══════════════════════════════════════════════════
@@ -799,6 +895,7 @@ class MemeSniper:
                 reverse=True,
             )[:250]
         )
+
         removed = len(self.alerted_tokens) - len(newest)
         self.alerted_tokens = newest
 
@@ -818,13 +915,14 @@ async def cleanup_all(bot: MemeSniper):
     Ferme proprement toutes les sessions et sauvegarde les données.
 
     Ordre important :
-    1. flush() perf_tracker EN PREMIER (sauvegarde les données)
+    1. flush() perf_tracker EN PREMIER
     2. stop() WebSocket
-    3. close() tous les modules avec session HTTP
+    3. stop() TokenSafety
+    4. close() tous les modules avec session HTTP
     """
     logger.info("[CLEANUP] 🛑 Arrêt en cours...")
 
-    # ── 1. Sauvegarde des données (EN PREMIER) ────────
+    # ── 1. Sauvegarde des données ─────────────────────
     try:
         bot.perf_tracker.flush()
         logger.info("[CLEANUP] ✅ Performance tracker sauvegardé")
@@ -839,7 +937,15 @@ async def cleanup_all(bot: MemeSniper):
     except Exception as e:
         logger.error(f"[CLEANUP] ws_client.stop() : {e}")
 
-    # ── 3. Fermeture du pump monitor ──────────────────
+    # ── 3. Arrêt TokenSafety ──────────────────────────
+    try:
+        if hasattr(bot, "token_safety") and bot.token_safety:
+            await bot.token_safety.stop()
+            logger.info("[CLEANUP] ✅ TokenSafety arrêté")
+    except Exception as e:
+        logger.error(f"[CLEANUP] token_safety.stop() : {e}")
+
+    # ── 4. Fermeture du pump monitor ──────────────────
     try:
         if hasattr(bot.pump_monitor, "close"):
             await bot.pump_monitor.close()
@@ -847,17 +953,17 @@ async def cleanup_all(bot: MemeSniper):
     except Exception as e:
         logger.error(f"[CLEANUP] pump_monitor.close() : {e}")
 
-    # ── 4. Fermeture des modules HTTP ─────────────────
+    # ── 5. Fermeture des modules HTTP ─────────────────
     modules_to_close = [
-        ("analyzer",       bot.analyzer),
-        ("alert_sender",   bot.alert_sender),
+        ("analyzer",         bot.analyzer),
+        ("alert_sender",     bot.alert_sender),
         ("position_tracker", bot.position_tracker),
-        ("market_context", bot.market_context),
-        ("alpha_tracker",  bot.alpha_tracker),
-        ("early_detector", bot.early_detector),
-        ("whale_inflow",   bot.whale_inflow),
-        ("twitter_tracker", bot.twitter_tracker),
-        ("whale_tracker",  bot.whale_tracker),
+        ("market_context",   bot.market_context),
+        ("alpha_tracker",    bot.alpha_tracker),
+        ("early_detector",   bot.early_detector),
+        ("whale_inflow",     bot.whale_inflow),
+        ("twitter_tracker",  bot.twitter_tracker),
+        ("whale_tracker",    bot.whale_tracker),
     ]
 
     for name, module in modules_to_close:
