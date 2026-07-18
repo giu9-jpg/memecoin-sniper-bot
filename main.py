@@ -1,4 +1,4 @@
-# main.py — v12.0 FINAL
+# main.py — v12.1 FINAL
 # Bot Sniper Memecoin Solana - Ultimate Edition
 # ═══════════════════════════════════════════════
 # ✅ Copy Trading + Early Detector + Whale Inflow
@@ -11,6 +11,7 @@
 # ✅ Dashboard Web temps réel
 # ✅ Multi-DEX (Raydium + Birdeye)
 # ✅ ML Scorer (apprentissage automatique)
+# ✅ Momentum Detector v12.1 (bull runs organiques)
 # ❌ PAS de trading automatique achat/vente
 
 import asyncio
@@ -40,6 +41,7 @@ from modules.twitter_tracker     import TwitterTracker
 from modules.token_safety        import TokenSafety
 from modules.dashboard           import DashboardServer
 from modules.raydium_monitor     import RadyiumMonitor
+from modules.momentum_detector   import MomentumDetector
 from modules.ml_scorer           import MLScorer
 
 from config.alpha_wallets        import (
@@ -113,6 +115,12 @@ class MemeSniper:
         # ── Multi-DEX Monitor v12.0 ───────────────────
         self.raydium_monitor = RadyiumMonitor()
 
+        # ── Momentum Detector v12.1 ───────────────────
+        self.momentum_detector = MomentumDetector(
+            alert_callback=self.handle_momentum_token
+        )
+        self.momentum_alerts = 0
+
         self.position_tracker = PositionTracker(
             alert_sender=self.alert_sender
         )
@@ -174,6 +182,13 @@ class MemeSniper:
         except Exception as e:
             logger.error(f"❌ Impossible de démarrer RadyiumMonitor : {e}")
 
+        # ── Démarrage MomentumDetector v12.1 ──────────
+        try:
+            await self.momentum_detector.start()
+            logger.info("🔥 MomentumDetector v12.1 : ACTIF")
+        except Exception as e:
+            logger.error(f"❌ Impossible de démarrer MomentumDetector : {e}")
+
         # ── Infos wallets ─────────────────────────────
         total_wallets = len(get_all_wallets())
         t1            = len(ALPHA_WALLETS.get("TIER1",   []))
@@ -190,7 +205,7 @@ class MemeSniper:
         ml_stats = self.ml_scorer.get_stats()
 
         # ── Logs de démarrage ─────────────────────────
-        logger.info("🚀 MemeSniper v12.0 FINAL démarré !")
+        logger.info("🚀 MemeSniper v12.1 FINAL démarré !")
         logger.info(f"   Score minimum      : {MIN_SCORE}/10")
         logger.info(f"   Smart Signals      : ACTIVÉS")
         logger.info(f"   Market Context     : ACTIF")
@@ -213,6 +228,7 @@ class MemeSniper:
         logger.info(f"   PumpPortal WS      : ACTIF (v2.1)")
         logger.info(f"   Polling Fallback   : ACTIF (v2.3)")
         logger.info(f"   Multi-DEX          : ACTIF (v12.0 Raydium+Birdeye)")
+        logger.info(f"   Momentum Detector  : ACTIF (v12.1 bull runs)")
         logger.info(
             f"   ML Scorer          : ACTIF "
             f"(v12.0 | {ml_stats.get('trades', 0)} trades | "
@@ -644,6 +660,7 @@ class MemeSniper:
                     f"Copy:{self.copy_trades} | "
                     f"Twitter:{self.twitter_signals} | "
                     f"Raydium:{self.raydium_tokens} | "
+                    f"Momentum:{self.momentum_alerts} | "
                     f"ML:{ml_st.get('trades', 0)} trades | "
                     f"Positions:{n_pos} | "
                     f"Marché:{regime} | "
@@ -824,13 +841,14 @@ class MemeSniper:
             dash_str = self._esc(dash_str)
 
         msg = (
-            f"🤖 *MemeSniper v12\\.0 FINAL*\n"
+            f"🤖 *MemeSniper v12\\.1 FINAL*\n"
             f"━━━━━━━━━━━━━━\n\n"
             f"⏱ Uptime: `{h}h {m}m {s}s`\n"
             f"🔄 État: *{self._esc(pause_str)}*\n"
             f"📡 WebSocket: {ws_str}\n"
             f"🛡️ Anti\\-Rug: ✅ Actif\n"
             f"🔄 Multi\\-DEX: ✅ Actif\n"
+            f"🔥 Momentum: ✅ Actif\n"
             f"🧠 ML: {ml_st.get('trades', 0)} trades\n"
             f"{dash_str}\n"
             f"📊 *Activité:*\n"
@@ -839,6 +857,7 @@ class MemeSniper:
             f"  Copy trades: `{self.copy_trades}`\n"
             f"  Twitter signals: `{self.twitter_signals}`\n"
             f"  Raydium tokens: `{self.raydium_tokens}`\n"
+            f"  Momentum alertes: `{self.momentum_alerts}`\n"
             f"  Positions ouvertes: `{n_pos}`\n\n"
             f"🌍 *Marché:*\n"
             f"  Régime: *{self._esc(regime)}*\n"
@@ -931,11 +950,7 @@ class MemeSniper:
             await self._send_reply(f"❌ Erreur: {self._esc(str(e))}")
 
     async def _cmd_win(self, args: str):
-        """
-        Commande /win <token> <pnl_pct>
-        Exemple: /win PEPE 250
-        Enregistre un trade gagnant pour le ML.
-        """
+        """Commande /win <token> <pnl_pct>"""
         parts = args.split()
         name  = parts[0] if parts else "?"
 
@@ -962,11 +977,7 @@ class MemeSniper:
         )
 
     async def _cmd_loss(self, args: str):
-        """
-        Commande /loss <token> <pnl_pct>
-        Exemple: /loss DOGE -35
-        Enregistre un trade perdant pour le ML.
-        """
+        """Commande /loss <token> <pnl_pct>"""
         parts = args.split()
         name  = parts[0] if parts else "?"
 
@@ -975,7 +986,6 @@ class MemeSniper:
         except ValueError:
             pnl = -30.0
 
-        # S'assurer que le PnL est négatif
         if pnl > 0:
             pnl = -pnl
 
@@ -997,7 +1007,7 @@ class MemeSniper:
         )
 
     async def _cmd_mlstats(self):
-        """Commande /mlstats — Stats du ML Scorer"""
+        """Commande /mlstats"""
         stats = self.ml_scorer.get_stats()
 
         if not stats.get("ready"):
@@ -1058,7 +1068,7 @@ class MemeSniper:
     async def _cmd_help(self):
         """Commande /help"""
         msg = (
-            "🤖 *MemeSniper v12\\.0 FINAL*\n"
+            "🤖 *MemeSniper v12\\.1 FINAL*\n"
             "━━━━━━━━━━━━━━\n\n"
             "📊 *Info:*\n"
             "/status \\- État du bot\n"
@@ -1173,6 +1183,120 @@ class MemeSniper:
         await self._analyze_and_alert(
             address, source=f"raydium_{source}"
         )
+
+    # ═══════════════════════════════════════════════════
+    # HANDLER MOMENTUM v12.1
+    # ═══════════════════════════════════════════════════
+
+    async def handle_momentum_token(self, token_data: dict):
+        """
+        Callback appelé par MomentumDetector quand un token pump
+        Envoie une alerte Telegram SÉPARÉE des alertes normales.
+        """
+        try:
+            if self.paused:
+                return
+
+            mint    = token_data["mint"]
+            symbol  = token_data["symbol"]
+            name    = token_data["name"]
+            trigger = token_data["trigger"]
+            pct     = token_data["trigger_pct"]
+            mc      = token_data["market_cap"]
+            liq     = token_data["liquidity"]
+            vol     = token_data["volume_24h"]
+            txns    = token_data["txns_1h"]
+
+            # Safety check rapide
+            safety = await self.token_safety.full_safety_check(mint)
+            safety_score = safety.get("score", 0)
+
+            if not safety.get("safe") and safety_score < 3:
+                logger.info(
+                    f"🔥 MOMENTUM {symbol} bloqué par safety "
+                    f"(score {safety_score})"
+                )
+                return
+
+            # Emoji selon intensité
+            emoji = "🔥🔥🔥" if pct >= 500 else "🔥🔥" if pct >= 200 else "🔥"
+
+            # Escape MarkdownV2
+            e_name    = self._esc(name)
+            e_symbol  = self._esc(symbol)
+            e_trigger = self._esc(trigger)
+
+            msg = (
+                f"{emoji} *MOMENTUM DETECTED* {emoji}\n"
+                f"━━━━━━━━━━━━━━━━━━\n\n"
+                f"💎 *{e_name}* \\(${e_symbol}\\)\n\n"
+                f"📈 *\\+{pct:.0f}%* en {e_trigger}\n"
+                f"  • 5min : `{token_data['change_5m']:+.0f}%`\n"
+                f"  • 1h   : `{token_data['change_1h']:+.0f}%`\n"
+                f"  • 6h   : `{token_data['change_6h']:+.0f}%`\n"
+                f"  • 24h  : `{token_data['change_24h']:+.0f}%`\n\n"
+                f"💰 MC        : `${mc/1000:.0f}K`\n"
+                f"💧 Liquidité : `${liq/1000:.0f}K`\n"
+                f"📊 Volume 24h: `${vol/1000:.0f}K`\n"
+                f"🔄 Txns 1h   : `{txns}`\n"
+                f"🛡️ Safety    : `{safety_score:.1f}/10`\n\n"
+                f"⚠️ *Pas de signal alpha — DYOR*\n"
+                f"⚠️ *Le pump est déjà en cours*\n\n"
+                f"`{mint}`"
+            )
+
+            # Boutons Telegram
+            buttons = [
+                [
+                    {
+                        "text": "🚀 Photon",
+                        "url": f"https://photon-sol.tinyastro.io/en/lp/{mint}"
+                    },
+                    {
+                        "text": "📊 Chart",
+                        "url": token_data.get("dex_url") or f"https://dexscreener.com/solana/{mint}"
+                    },
+                ],
+                [
+                    {
+                        "text": "🔍 Safety",
+                        "url": f"https://rugcheck.xyz/tokens/{mint}"
+                    },
+                    {
+                        "text": "💱 Jupiter",
+                        "url": f"https://jup.ag/swap/SOL-{mint}"
+                    },
+                ],
+                [
+                    {
+                        "text": "🔎 Solscan",
+                        "url": f"https://solscan.io/token/{mint}"
+                    },
+                    {
+                        "text": f"🐦 Twitter ${symbol}",
+                        "url": f"https://twitter.com/search?q=%24{symbol}"
+                    },
+                ],
+            ]
+
+            # Envoi via alert_sender
+            await self.alert_sender._send_telegram(msg, buttons=buttons)
+
+            self.momentum_alerts += 1
+
+            # Dashboard event
+            if self.dashboard:
+                self.dashboard.add_event(
+                    f"🔥 MOMENTUM ${symbol} +{pct:.0f}% en {trigger}"
+                )
+
+            logger.info(
+                f"✅ Alerte MOMENTUM envoyée : "
+                f"${symbol} +{pct:.0f}% en {trigger}"
+            )
+
+        except Exception as e:
+            logger.error(f"Handler momentum error : {e}", exc_info=True)
 
     # ═══════════════════════════════════════════════════
     # ANALYSE + ALERTE — CŒUR DU BOT
@@ -1480,6 +1604,13 @@ async def cleanup_all(bot: MemeSniper):
             logger.info("[CLEANUP] ✅ RadyiumMonitor arrêté")
     except Exception as e:
         logger.error(f"[CLEANUP] raydium_monitor.stop() : {e}")
+
+    try:
+        if bot.momentum_detector:
+            await bot.momentum_detector.stop()
+            logger.info("[CLEANUP] ✅ MomentumDetector arrêté")
+    except Exception as e:
+        logger.error(f"[CLEANUP] momentum_detector.stop() : {e}")
 
     try:
         if bot.dashboard:
