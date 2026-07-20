@@ -1,10 +1,12 @@
-# main.py — v13.1 FINAL
+# main.py — v13.2 FINAL
 # Bot Sniper Memecoin Solana - ULTIMATE EDITION
 # ═══════════════════════════════════════════════
-# v13.1 FIX :
-# - Pas d'ajout auto au sell tracker (fini le spam)
-# - Nouvelle commande /clearpositions pour tout nettoyer
-# - Position tracker manuel uniquement via /watch <mint>
+# v13.2 NEW :
+# - TradeAssistant : achat via Photon assisté
+# - /buy SYM AMT → prépare achat avec lien Photon
+# - /confirm → valide l'achat après Photon
+# - /cancel → annule achat en attente
+# - /sell SYM PNL → enregistre vente + nourrit ML
 
 import asyncio
 import gc
@@ -49,6 +51,7 @@ from modules.csv_exporter          import CSVExporter
 from modules.watchlist             import Watchlist
 from modules.admin_security        import AdminSecurity
 from modules.social_score          import SocialScore
+from modules.trade_assistant       import TradeAssistant
 
 from config.alpha_wallets        import (
     ALPHA_WALLETS,
@@ -130,6 +133,13 @@ class MemeSniper:
             market_context=self.market_context
         )
 
+        # v13.2 : TradeAssistant (nécessite alert_sender, portfolio_tracker, ml_scorer)
+        self.trade_assistant = TradeAssistant(
+            portfolio_tracker=self.portfolio_tracker,
+            alert_sender=self.alert_sender,
+            ml_scorer=self.ml_scorer,
+        )
+
         self.auto_optimizer = AutoOptimizer(
             ml_scorer=self.ml_scorer,
             bull_analyzer=self.bull_analyzer,
@@ -204,6 +214,7 @@ class MemeSniper:
             ("Watchlist",              self.watchlist),
             ("AdminSecurity",          self.admin_security),
             ("SocialScore",            self.social_score),
+            ("TradeAssistant",         self.trade_assistant),
         ]
 
         for name, module in modules_to_start:
@@ -226,7 +237,7 @@ class MemeSniper:
         ml_stats = self.ml_scorer.get_stats()
         opt_config = self.auto_optimizer.get_current_config()
 
-        logger.info("🚀 MemeSniper v13.1 FINAL démarré !")
+        logger.info("🚀 MemeSniper v13.2 FINAL démarré !")
         logger.info(f"   Score min : {opt_config.get('min_score', MIN_SCORE)}/10")
         logger.info(f"   Alpha Wallets : {total_wallets} (T1:{t1} T1.5:{t15} T2:{t2})")
         logger.info(f"   Twitter : {twitter_count} (T1:{t1_tw} T2:{t2_tw} T3:{t3_tw})")
@@ -238,7 +249,7 @@ class MemeSniper:
                 f"{self.config.dashboard.port}"
             )
 
-        logger.info(f"   Trading Auto : DÉSACTIVÉ")
+        logger.info(f"   Trading Auto : DÉSACTIVÉ (Photon assisté)")
 
         try:
             await self.market_context.fetch_market_data()
@@ -531,6 +542,7 @@ class MemeSniper:
                 opt = self.auto_optimizer.get_stats()
                 port = self.portfolio_tracker.get_portfolio_summary()
                 wl = self.watchlist.get_stats()
+                ta = self.trade_assistant.get_stats()
 
                 logger.info(
                     f"[HEALTH] {pause} | Up:{uptime}min | WS:{ws} | "
@@ -543,6 +555,7 @@ class MemeSniper:
                     f"WSell:{self.whale_sell_alerts_sent} | "
                     f"Watch:{wl['active_watches']}/{self.watchlist_alerts_sent} | "
                     f"Port:{port['open_positions']}p | "
+                    f"Trade:{ta['buys_confirmed']}b/{ta['sells_registered']}s | "
                     f"Wl:{wd['wallets_tracked']}/{wd['candidates_ready']}c | "
                     f"Opt:{opt['total_optimizations']} | "
                     f"ML:{ml.get('trades', 0)} | Mkt:{regime}"
@@ -654,6 +667,8 @@ class MemeSniper:
         routes = {
             "/status":         self._cmd_status,
             "/stats":          self._cmd_stats,
+            "/confirm":        self._cmd_confirm_buy,
+            "/cancel":         self._cmd_cancel_buy,
             "/alertes":        self._cmd_alertes,
             "/mlstats":        self._cmd_mlstats,
             "/bullrun":        self._cmd_bullrun,
@@ -707,12 +722,13 @@ class MemeSniper:
         opt = self.auto_optimizer.get_stats()
         port = self.portfolio_tracker.get_portfolio_summary()
         wl = self.watchlist.get_stats()
+        ta = self.trade_assistant.get_stats()
 
         pause_str = "⏸ EN PAUSE" if self.paused else "▶️ Actif"
         ws_str = "✅ Actif" if self.ws_active else "❌ Inactif"
 
         msg = (
-            f"🤖 *MemeSniper v13\\.1 FINAL*\n"
+            f"🤖 *MemeSniper v13\\.2 FINAL*\n"
             f"━━━━━━━━━━━━━━\n\n"
             f"⏱ Uptime: `{h}h {m}m {s}s`\n"
             f"🔄 État: *{self._esc(pause_str)}*\n"
@@ -726,6 +742,7 @@ class MemeSniper:
             f"📉 Dump: `{self.dump_alerts_sent}`\n"
             f"🐋 WSell: `{self.whale_sell_alerts_sent}`\n"
             f"🔔 Watch: `{wl['active_watches']}`\n"
+            f"💰 Trade: `{ta['buys_confirmed']}` buys \\| `{ta['sells_registered']}` sells\n"
             f"🧠 ML: `{ml.get('trades', 0)}` trades\n\n"
             f"📊 *Activité :*\n"
             f"  Analysés: `{self.tokens_analyzed}`\n"
@@ -1020,12 +1037,17 @@ class MemeSniper:
 
         await self._send_reply("\n".join(lines))
 
+    # ═══════════════════════════════════════════════════
+    # TRADING v13.2 (buy/confirm/cancel/sell)
+    # ═══════════════════════════════════════════════════
+
     async def _cmd_buy(self, args: str):
+        """v13.2 : Prépare un achat via Photon assisté"""
         parts = args.split()
         if len(parts) < 2:
             await self._send_reply(
                 "❌ `/buy SYMBOL AMOUNT [MINT]`\n"
-                "Ex: `/buy PEPE 50`"
+                "Ex: `/buy PEPE 10`"
             )
             return
 
@@ -1038,55 +1060,163 @@ class MemeSniper:
 
         mint = parts[2] if len(parts) > 2 else None
 
-        result = await self.portfolio_tracker.add_buy(
-            symbol=symbol, amount_eur=amount, mint=mint
+        user_id = os.getenv("TELEGRAM_CHAT_ID", "default")
+
+        result = await self.trade_assistant.prepare_buy(
+            user_id=user_id,
+            symbol=symbol,
+            amount_eur=amount,
+            mint=mint,
         )
 
-        if result["success"]:
-            pos = result["position"]
+        if not result["success"]:
+            await self._send_reply(f"❌ {self._esc(result['message'])}")
+            return
+
+        msg = (
+            f"💰 *ACHAT PRÉPARÉ*\n"
+            f"━━━━━━━━━━━━━━\n\n"
+            f"🪙 Token: `${self._esc(symbol)}`\n"
+            f"💵 Montant: `{amount:.2f}€`\n"
+            f"◎ SOL équivalent: `{result['amount_sol']:.4f}`\n\n"
+            f"📊 Prix: `${result['price']:.8f}`\n"
+            f"💰 MC: `${result['market_cap']/1000:.0f}K`\n"
+            f"💧 Liquidité: `${result['liquidity']/1000:.0f}K`\n\n"
+            f"👇 *Étapes :*\n"
+            f"1\\. Clique *🚀 OUVRIR PHOTON*\n"
+            f"2\\. Confirme l'achat dans Photon\n"
+            f"3\\. Reviens ici et tape `/confirm`\n\n"
+            f"⏱ Expire dans 10 min"
+        )
+
+        buttons = {"inline_keyboard": [
+            [
+                {"text": "🚀 OUVRIR PHOTON",
+                 "url": result["photon_url"]},
+            ],
+            [
+                {"text": "📊 Chart DexScreener",
+                 "url": f"https://dexscreener.com/solana/{result['mint']}"},
+            ],
+        ]}
+
+        await self.alert_sender._send_telegram(msg, buttons=buttons)
+
+    async def _cmd_confirm_buy(self):
+        """v13.2 : Confirme l'achat en attente"""
+        user_id = os.getenv("TELEGRAM_CHAT_ID", "default")
+
+        pending = self.trade_assistant.get_pending_buy(user_id)
+        if not pending:
             await self._send_reply(
-                f"✅ *ACHAT*\n\n"
-                f"Token: `${self._esc(symbol)}`\n"
-                f"Montant: `{amount:.2f}€`\n"
-                f"MC: `${pos.get('entry_mc', 0)/1000:.0f}K`"
+                "❌ *Aucun achat en attente*\n\n"
+                "Utilise d'abord `/buy SYMBOL AMOUNT`"
+            )
+            return
+
+        result = await self.trade_assistant.confirm_buy(user_id)
+
+        if result["success"]:
+            symbol = self._esc(result["symbol"])
+            amount = result["amount_eur"]
+            await self._send_reply(
+                f"✅ *ACHAT CONFIRMÉ*\n"
+                f"━━━━━━━━━━━━━━\n\n"
+                f"🪙 Token: `${symbol}`\n"
+                f"💵 Montant: `{amount:.2f}€`\n"
+                f"📊 Prix entrée: `${result['entry_price']:.8f}`\n\n"
+                f"✅ Ajouté au portfolio\n"
+                f"📊 `/portfolio` pour voir\n"
+                f"💰 `/sell {symbol} PNL` quand tu vends"
             )
         else:
-            await self._send_reply(f"❌ {self._esc(result.get('error', 'Erreur'))}")
+            await self._send_reply(f"❌ {self._esc(result['message'])}")
+
+    async def _cmd_cancel_buy(self):
+        """v13.2 : Annule l'achat en attente"""
+        user_id = os.getenv("TELEGRAM_CHAT_ID", "default")
+
+        result = await self.trade_assistant.cancel_buy(user_id)
+
+        if result["success"]:
+            await self._send_reply(f"✅ {self._esc(result['message'])}")
+        else:
+            await self._send_reply(f"❌ {self._esc(result['message'])}")
 
     async def _cmd_sell(self, args: str):
+        """v13.2 : Enregistre une vente avec PnL et nourrit ML"""
         parts = args.split()
         if not parts:
-            await self._send_reply("❌ `/sell SYMBOL [PNL_PCT]`")
+            await self._send_reply(
+                "❌ `/sell SYMBOL PNL_PCT`\n"
+                "Ex: `/sell PEPE 250` (pour +250%)\n"
+                "Ex: `/sell DOGE -35` (pour -35%)"
+            )
             return
 
         symbol = parts[0].upper()
-        pnl = None
-        try:
-            if len(parts) > 1:
-                pnl = float(parts[1])
-        except ValueError:
-            pass
 
-        result = await self.portfolio_tracker.add_sell(symbol=symbol, pnl_pct=pnl)
-
-        if result["success"]:
-            trade = result["trade"]
-            pnl_emoji = "🚀" if trade["pnl_pct"] > 0 else "💀"
+        if len(parts) < 2:
             await self._send_reply(
-                f"{pnl_emoji} *VENTE*\n\n"
-                f"Token: `${self._esc(symbol)}`\n"
-                f"PnL: `{trade['pnl_pct']:+.1f}%`\n"
-                f"Gain: `{trade['pnl_eur']:+.2f}€`\n"
-                f"Durée: `{trade['duration_min']:.0f}min`"
+                f"❌ Précise le PnL en % :\n"
+                f"`/sell {symbol} 250` pour +250%\n"
+                f"`/sell {symbol} -35` pour -35%"
             )
+            return
 
-            self.ml_scorer.record_result(
-                token_name=symbol,
-                is_win=(trade['pnl_pct'] > 0),
-                pnl_pct=trade['pnl_pct'],
-            )
+        try:
+            pnl = float(parts[1])
+        except ValueError:
+            await self._send_reply("❌ PnL invalide (nombre requis)")
+            return
+
+        result = await self.trade_assistant.register_sell(
+            symbol=symbol,
+            pnl_pct=pnl,
+        )
+
+        if not result["success"]:
+            await self._send_reply(f"❌ {self._esc(result['message'])}")
+            return
+
+        if pnl >= 100:
+            emoji = "🚀🚀🚀"
+        elif pnl >= 50:
+            emoji = "🚀"
+        elif pnl > 0:
+            emoji = "📈"
+        elif pnl > -30:
+            emoji = "📉"
         else:
-            await self._send_reply(f"❌ {self._esc(result.get('error', 'Erreur'))}")
+            emoji = "💀"
+
+        pnl_eur = result["pnl_eur"]
+        final_eur = result["final_eur"]
+        amount = result["amount_eur"]
+        duration = result["duration_min"]
+
+        if duration < 60:
+            duration_str = f"{duration:.0f} min"
+        elif duration < 1440:
+            duration_str = f"{duration/60:.1f}h"
+        else:
+            duration_str = f"{duration/1440:.1f}j"
+
+        msg = (
+            f"{emoji} *VENTE ENREGISTRÉE*\n"
+            f"━━━━━━━━━━━━━━\n\n"
+            f"🪙 Token: `${self._esc(symbol)}`\n"
+            f"📊 PnL: *`{pnl:+.1f}%`*\n\n"
+            f"💰 *Détails :*\n"
+            f"  Investi: `{amount:.2f}€`\n"
+            f"  Gain/Perte: `{pnl_eur:+.2f}€`\n"
+            f"  Final: `{final_eur:.2f}€`\n"
+            f"  Durée: `{duration_str}`\n\n"
+            f"🧠 ML mis à jour\n"
+            f"📊 `/pnl` pour voir le bilan"
+        )
+
+        await self._send_reply(msg)
 
     async def _cmd_portfolio(self):
         summary = self.portfolio_tracker.get_portfolio_summary()
@@ -1095,8 +1225,8 @@ class MemeSniper:
         if summary["open_positions"] == 0 and summary["total_trades"] == 0:
             await self._send_reply(
                 f"💼 *Portfolio vide*\n\n"
-                f"💡 `/buy SYMBOL AMOUNT`\n"
-                f"💡 `/sell SYMBOL [PNL]`"
+                f"💡 `/buy SYMBOL AMOUNT` pour acheter\n"
+                f"💡 `/sell SYMBOL PNL` quand tu vends"
             )
             return
 
@@ -1324,7 +1454,6 @@ class MemeSniper:
         await self._send_reply("\n".join(lines))
 
     async def _cmd_clear_positions(self):
-        """Ferme TOUTES les positions surveillées d'un coup"""
         count = self.sell_generator.clear_all_positions()
         await self._send_reply(
             f"✅ *{count} positions supprimées*\n\n"
@@ -1506,13 +1635,17 @@ class MemeSniper:
 
     async def _cmd_help(self):
         msg = (
-            "🤖 *MemeSniper v13\\.1 FINAL*\n"
+            "🤖 *MemeSniper v13\\.2 FINAL*\n"
             "━━━━━━━━━━━━━━\n\n"
             "📊 *Info :*\n"
             "/status /stats /alertes\n"
             "/bullrun /backtest\n\n"
+            "💰 *TRADING 🆕:*\n"
+            "/buy `SYM AMT` \\- Préparer achat\n"
+            "/confirm \\- Confirmer achat\n"
+            "/cancel \\- Annuler achat\n"
+            "/sell `SYM PNL` \\- Enregistrer vente\n\n"
             "💼 *Portfolio :*\n"
-            "/buy `SYM AMT` /sell `SYM [PNL]`\n"
             "/portfolio /pnl /trades\n\n"
             "🔔 *Watchlist :*\n"
             "/watchmc `SYM 500K`\n"
@@ -1886,8 +2019,6 @@ class MemeSniper:
                     self.position_tracker.add_position(
                         analysis, decision, decision["amount_eur"]
                     )
-                    # v13.1 : PLUS d'ajout auto au sell tracker
-                    # Utilise /watch <mint> manuellement si tu achètes vraiment
 
                 logger.info(f"[ALERT] ✅ {symbol} {score:.1f}/10 → {decision['action']}")
                 if self.dashboard:
@@ -1937,6 +2068,7 @@ async def cleanup_all(bot: MemeSniper):
         ("Watchlist",         bot.watchlist),
         ("AdminSecurity",     bot.admin_security),
         ("SocialScore",       bot.social_score),
+        ("TradeAssistant",    bot.trade_assistant),
         ("Dashboard",         bot.dashboard),
     ]
 
