@@ -1,12 +1,11 @@
-# main.py — v13.2 FINAL
+# main.py — v13.3 FINAL
 # Bot Sniper Memecoin Solana - ULTIMATE EDITION
 # ═══════════════════════════════════════════════
-# v13.2 NEW :
-# - TradeAssistant : achat via Photon assisté
-# - /buy SYM AMT → prépare achat avec lien Photon
-# - /confirm → valide l'achat après Photon
-# - /cancel → annule achat en attente
-# - /sell SYM PNL → enregistre vente + nourrit ML
+# v13.3 NEW :
+# - Simulator : paper trading automatique
+# - /simulate : voir résultats simulés
+# - /simreset : effacer toutes les simulations
+# - Chaque alerte est simulée automatiquement
 
 import asyncio
 import gc
@@ -52,6 +51,7 @@ from modules.watchlist             import Watchlist
 from modules.admin_security        import AdminSecurity
 from modules.social_score          import SocialScore
 from modules.trade_assistant       import TradeAssistant
+from modules.simulator             import Simulator
 
 from config.alpha_wallets        import (
     ALPHA_WALLETS,
@@ -133,12 +133,15 @@ class MemeSniper:
             market_context=self.market_context
         )
 
-        # v13.2 : TradeAssistant (nécessite alert_sender, portfolio_tracker, ml_scorer)
+        # v13.2 : TradeAssistant
         self.trade_assistant = TradeAssistant(
             portfolio_tracker=self.portfolio_tracker,
             alert_sender=self.alert_sender,
             ml_scorer=self.ml_scorer,
         )
+
+        # v13.3 : Simulator (paper trading automatique)
+        self.simulator = Simulator(ml_scorer=self.ml_scorer)
 
         self.auto_optimizer = AutoOptimizer(
             ml_scorer=self.ml_scorer,
@@ -215,6 +218,7 @@ class MemeSniper:
             ("AdminSecurity",          self.admin_security),
             ("SocialScore",            self.social_score),
             ("TradeAssistant",         self.trade_assistant),
+            ("Simulator",              self.simulator),
         ]
 
         for name, module in modules_to_start:
@@ -237,7 +241,7 @@ class MemeSniper:
         ml_stats = self.ml_scorer.get_stats()
         opt_config = self.auto_optimizer.get_current_config()
 
-        logger.info("🚀 MemeSniper v13.2 FINAL démarré !")
+        logger.info("🚀 MemeSniper v13.3 FINAL démarré !")
         logger.info(f"   Score min : {opt_config.get('min_score', MIN_SCORE)}/10")
         logger.info(f"   Alpha Wallets : {total_wallets} (T1:{t1} T1.5:{t15} T2:{t2})")
         logger.info(f"   Twitter : {twitter_count} (T1:{t1_tw} T2:{t2_tw} T3:{t3_tw})")
@@ -249,7 +253,7 @@ class MemeSniper:
                 f"{self.config.dashboard.port}"
             )
 
-        logger.info(f"   Trading Auto : DÉSACTIVÉ (Photon assisté)")
+        logger.info(f"   Trading Auto : DÉSACTIVÉ (Photon assisté + Simulator)")
 
         try:
             await self.market_context.fetch_market_data()
@@ -506,6 +510,7 @@ class MemeSniper:
 
                 wd_stats = self.wallet_discovery.get_stats()
                 wl_stats = self.watchlist.get_stats()
+                sim_stats = self.simulator.get_stats()
 
                 logger.info(
                     f"[MEMORY] alerted={len(self.alerted_tokens)} | "
@@ -514,6 +519,7 @@ class MemeSniper:
                     f"pos={self.sell_generator.get_positions_count()} | "
                     f"disco={wd_stats['wallets_tracked']} | "
                     f"watch={wl_stats['active_watches']} | "
+                    f"sim={sim_stats['open_positions']}o/{sim_stats['closed_positions']}c | "
                     f"gc={collected}"
                 )
             except asyncio.CancelledError:
@@ -543,6 +549,7 @@ class MemeSniper:
                 port = self.portfolio_tracker.get_portfolio_summary()
                 wl = self.watchlist.get_stats()
                 ta = self.trade_assistant.get_stats()
+                sim = self.simulator.get_stats()
 
                 logger.info(
                     f"[HEALTH] {pause} | Up:{uptime}min | WS:{ws} | "
@@ -556,6 +563,7 @@ class MemeSniper:
                     f"Watch:{wl['active_watches']}/{self.watchlist_alerts_sent} | "
                     f"Port:{port['open_positions']}p | "
                     f"Trade:{ta['buys_confirmed']}b/{ta['sells_registered']}s | "
+                    f"Sim:{sim['closed_positions']}t/WR{sim['win_rate']:.0f}%/ROI{sim['roi_pct']:+.0f}% | "
                     f"Wl:{wd['wallets_tracked']}/{wd['candidates_ready']}c | "
                     f"Opt:{opt['total_optimizations']} | "
                     f"ML:{ml.get('trades', 0)} | Mkt:{regime}"
@@ -684,6 +692,8 @@ class MemeSniper:
             "/watchlist":      self._cmd_watchlist,
             "/compare":        self._cmd_compare_strategies,
             "/strategies":     self._cmd_list_strategies,
+            "/simulate":       self._cmd_simulate,
+            "/simreset":       self._cmd_sim_reset,
             "/report":         self._cmd_report,
             "/admin":          self._cmd_admin,
             "/pause":          self._cmd_pause,
@@ -723,12 +733,13 @@ class MemeSniper:
         port = self.portfolio_tracker.get_portfolio_summary()
         wl = self.watchlist.get_stats()
         ta = self.trade_assistant.get_stats()
+        sim = self.simulator.get_stats()
 
         pause_str = "⏸ EN PAUSE" if self.paused else "▶️ Actif"
         ws_str = "✅ Actif" if self.ws_active else "❌ Inactif"
 
         msg = (
-            f"🤖 *MemeSniper v13\\.2 FINAL*\n"
+            f"🤖 *MemeSniper v13\\.3 FINAL*\n"
             f"━━━━━━━━━━━━━━\n\n"
             f"⏱ Uptime: `{h}h {m}m {s}s`\n"
             f"🔄 État: *{self._esc(pause_str)}*\n"
@@ -743,6 +754,7 @@ class MemeSniper:
             f"🐋 WSell: `{self.whale_sell_alerts_sent}`\n"
             f"🔔 Watch: `{wl['active_watches']}`\n"
             f"💰 Trade: `{ta['buys_confirmed']}` buys \\| `{ta['sells_registered']}` sells\n"
+            f"🎮 Sim: `{sim['closed_positions']}` trades \\| ROI `{sim['roi_pct']:+.0f}%`\n"
             f"🧠 ML: `{ml.get('trades', 0)}` trades\n\n"
             f"📊 *Activité :*\n"
             f"  Analysés: `{self.tokens_analyzed}`\n"
@@ -1038,11 +1050,10 @@ class MemeSniper:
         await self._send_reply("\n".join(lines))
 
     # ═══════════════════════════════════════════════════
-    # TRADING v13.2 (buy/confirm/cancel/sell)
+    # TRADING v13.2
     # ═══════════════════════════════════════════════════
 
     async def _cmd_buy(self, args: str):
-        """v13.2 : Prépare un achat via Photon assisté"""
         parts = args.split()
         if len(parts) < 2:
             await self._send_reply(
@@ -1103,7 +1114,6 @@ class MemeSniper:
         await self.alert_sender._send_telegram(msg, buttons=buttons)
 
     async def _cmd_confirm_buy(self):
-        """v13.2 : Confirme l'achat en attente"""
         user_id = os.getenv("TELEGRAM_CHAT_ID", "default")
 
         pending = self.trade_assistant.get_pending_buy(user_id)
@@ -1133,7 +1143,6 @@ class MemeSniper:
             await self._send_reply(f"❌ {self._esc(result['message'])}")
 
     async def _cmd_cancel_buy(self):
-        """v13.2 : Annule l'achat en attente"""
         user_id = os.getenv("TELEGRAM_CHAT_ID", "default")
 
         result = await self.trade_assistant.cancel_buy(user_id)
@@ -1144,7 +1153,6 @@ class MemeSniper:
             await self._send_reply(f"❌ {self._esc(result['message'])}")
 
     async def _cmd_sell(self, args: str):
-        """v13.2 : Enregistre une vente avec PnL et nourrit ML"""
         parts = args.split()
         if not parts:
             await self._send_reply(
@@ -1217,6 +1225,105 @@ class MemeSniper:
         )
 
         await self._send_reply(msg)
+
+    # ═══════════════════════════════════════════════════
+    # SIMULATOR v13.3
+    # ═══════════════════════════════════════════════════
+
+    async def _cmd_simulate(self):
+        """Affiche les stats de simulation"""
+        stats = self.simulator.get_stats()
+
+        if stats["total_simulated"] == 0:
+            await self._send_reply(
+                f"🎮 *SIMULATOR*\n"
+                f"━━━━━━━━━━━━━━\n\n"
+                f"⏳ Aucune simulation encore\\.\n\n"
+                f"Le bot va simuler automatiquement\n"
+                f"chaque alerte comme si tu avais\n"
+                f"acheté 10€\\.\n\n"
+                f"Reviens dans quelques heures\\!"
+            )
+            return
+
+        lines = [
+            f"🎮 *SIMULATOR \\- Paper Trading*",
+            f"━━━━━━━━━━━━━━",
+            f"",
+            f"📊 *Statistiques :*",
+            f"  Simulés: `{stats['total_simulated']}`",
+            f"  Ouverts: `{stats['open_positions']}`",
+            f"  Fermés: `{stats['closed_positions']}`",
+            f"  Wins: `{stats['wins']}` ✅",
+            f"  Losses: `{stats['losses']}` ❌",
+            f"  Win rate: *`{stats['win_rate']}%`*",
+            f"",
+            f"💰 *Performance :*",
+            f"  Investi total: `{stats['total_invested']:.0f}€`",
+            f"  PnL global: `{stats['total_pnl']:+.2f}€`",
+            f"  ROI: *`{stats['roi_pct']:+.1f}%`*",
+            f"",
+            f"📅 *Par période :*",
+            f"  Aujourd'hui: `{stats['pnl_day']:+.2f}€`",
+            f"  7 jours: `{stats['pnl_week']:+.2f}€`",
+            f"",
+            f"⏱ Durée moy: `{stats['avg_duration_min']:.0f}min`",
+        ]
+
+        if stats.get("best_trade"):
+            best = stats["best_trade"]
+            lines.append(f"")
+            lines.append(f"🏆 *Meilleur trade :*")
+            lines.append(
+                f"  ${self._esc(best['symbol'])} : `{best.get('pnl_pct', 0):+.0f}%` "
+                f"\\({best.get('pnl_eur', 0):+.2f}€\\)"
+            )
+
+        if stats.get("worst_trade"):
+            worst = stats["worst_trade"]
+            lines.append(f"")
+            lines.append(f"💀 *Pire trade :*")
+            lines.append(
+                f"  ${self._esc(worst['symbol'])} : `{worst.get('pnl_pct', 0):+.0f}%` "
+                f"\\({worst.get('pnl_eur', 0):+.2f}€\\)"
+            )
+
+        open_pos = self.simulator.get_open_positions()
+        if open_pos:
+            lines.append(f"")
+            lines.append(f"━━━━━━━━━━━━━━")
+            lines.append(f"💎 *Positions ouvertes \\({len(open_pos)}\\) :*")
+            for p in open_pos[:5]:
+                sym = self._esc(p["symbol"])
+                pnl = p.get("current_pnl", 0)
+                emoji = "🚀" if pnl > 0 else "📉" if pnl < 0 else "➡️"
+                lines.append(f"  {emoji} `${sym}` : `{pnl:+.0f}%`")
+
+        recent = self.simulator.get_recent_trades(limit=5)
+        if recent:
+            lines.append(f"")
+            lines.append(f"━━━━━━━━━━━━━━")
+            lines.append(f"📋 *5 derniers trades :*")
+            for t in recent:
+                sym = self._esc(t["symbol"])
+                pnl_pct = t.get("pnl_pct", 0)
+                pnl_eur = t.get("pnl_eur", 0)
+                emoji = "🚀" if pnl_pct > 0 else "💀"
+                lines.append(
+                    f"  {emoji} `${sym}` `{pnl_pct:+.0f}%` "
+                    f"\\({pnl_eur:+.2f}€\\)"
+                )
+
+        await self._send_reply("\n".join(lines))
+
+    async def _cmd_sim_reset(self):
+        """Reset toutes les simulations"""
+        count = self.simulator.reset()
+        await self._send_reply(
+            f"✅ *{count} simulations supprimées*\n\n"
+            f"Le simulator est vide\\.\n"
+            f"Nouvelles alertes = nouvelles simulations\\."
+        )
 
     async def _cmd_portfolio(self):
         summary = self.portfolio_tracker.get_portfolio_summary()
@@ -1635,16 +1742,19 @@ class MemeSniper:
 
     async def _cmd_help(self):
         msg = (
-            "🤖 *MemeSniper v13\\.2 FINAL*\n"
+            "🤖 *MemeSniper v13\\.3 FINAL*\n"
             "━━━━━━━━━━━━━━\n\n"
             "📊 *Info :*\n"
             "/status /stats /alertes\n"
             "/bullrun /backtest\n\n"
-            "💰 *TRADING 🆕:*\n"
+            "💰 *TRADING :*\n"
             "/buy `SYM AMT` \\- Préparer achat\n"
             "/confirm \\- Confirmer achat\n"
             "/cancel \\- Annuler achat\n"
             "/sell `SYM PNL` \\- Enregistrer vente\n\n"
+            "🎮 *SIMULATION 🆕:*\n"
+            "/simulate \\- Voir résultats simulés\n"
+            "/simreset \\- Reset simulations\n\n"
             "💼 *Portfolio :*\n"
             "/portfolio /pnl /trades\n\n"
             "🔔 *Watchlist :*\n"
@@ -1767,6 +1877,16 @@ class MemeSniper:
             symbol = signal_data["symbol"]
             mint = signal_data["mint"]
             pnl = signal_data["pnl_pct"]
+
+            # v13.3 : Simulation automatique de la vente
+            try:
+                await self.simulator.simulate_sell(
+                    mint=mint,
+                    reason="sell_signal"
+                )
+            except Exception as e:
+                logger.debug(f"Simulator sell error : {e}")
+
             signals = signal_data["signals"]
             confidence = signal_data["confidence"]
 
@@ -2019,6 +2139,18 @@ class MemeSniper:
                     self.position_tracker.add_position(
                         analysis, decision, decision["amount_eur"]
                     )
+                    # v13.3 : Simulation automatique
+                    try:
+                        await self.simulator.simulate_buy(
+                            mint=address,
+                            symbol=symbol,
+                            alert_data={
+                                "score": score,
+                                "tier": decision.get("tier", "?"),
+                            }
+                        )
+                    except Exception as e:
+                        logger.debug(f"Simulator buy error : {e}")
 
                 logger.info(f"[ALERT] ✅ {symbol} {score:.1f}/10 → {decision['action']}")
                 if self.dashboard:
@@ -2069,6 +2201,7 @@ async def cleanup_all(bot: MemeSniper):
         ("AdminSecurity",     bot.admin_security),
         ("SocialScore",       bot.social_score),
         ("TradeAssistant",    bot.trade_assistant),
+        ("Simulator",         bot.simulator),
         ("Dashboard",         bot.dashboard),
     ]
 
