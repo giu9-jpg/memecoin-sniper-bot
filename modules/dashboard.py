@@ -1,11 +1,13 @@
-# modules/dashboard.py v1.0
+# modules/dashboard.py v2.0
 """
 Dashboard web temps réel
-Accessible sur http://localhost:8080
+Local  : http://localhost:8080
+Railway: https://[ton-url].up.railway.app
 Mise à jour automatique toutes les 3 secondes
 """
 
 import asyncio
+import os
 import time
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -14,9 +16,6 @@ from utils.logger import get_logger
 
 logger = get_logger("dashboard")
 
-# ════════════════════════════════════════
-# HTML COMPLET DU DASHBOARD
-# ════════════════════════════════════════
 HTML = """<!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -131,67 +130,93 @@ body{font-family:'Courier New',monospace;background:#0a0a0a;color:#ccc}
 </div>
 
 <script>
-let ws,reconnTimer;
+let ws, reconnTimer;
 
 function connect(){
-  ws=new WebSocket('ws://'+location.host+'/ws');
-  ws.onopen=()=>{
-    document.getElementById('ws-badge').className='ws-badge';
-    document.getElementById('ws-badge').textContent='LIVE';
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/ws');
+  ws.onopen = () => {
+    document.getElementById('ws-badge').className = 'ws-badge';
+    document.getElementById('ws-badge').textContent = 'LIVE';
     addFeed('Connecte au dashboard');
     clearTimeout(reconnTimer);
   };
-  ws.onmessage=(e)=>{try{render(JSON.parse(e.data))}catch(err){console.error(err)}};
-  ws.onclose=()=>{
-    document.getElementById('ws-badge').className='ws-badge err';
-    document.getElementById('ws-badge').textContent='OFFLINE';
-    addFeed('Connexion perdue - reconnexion...');
-    reconnTimer=setTimeout(connect,5000);
+  ws.onmessage = (e) => {
+    try { render(JSON.parse(e.data)); } catch(err) { console.error(err); }
   };
-  ws.onerror=()=>ws.close();
+  ws.onclose = () => {
+    document.getElementById('ws-badge').className = 'ws-badge err';
+    document.getElementById('ws-badge').textContent = 'OFFLINE';
+    addFeed('Connexion perdue - reconnexion dans 5s...');
+    reconnTimer = setTimeout(connect, 5000);
+  };
+  ws.onerror = () => ws.close();
 }
 
 function render(d){
-  const up=d.uptime||0;
-  const h=Math.floor(up/3600),m=Math.floor((up%3600)/60),s=Math.floor(up%60);
-  const upStr=h+'h '+m+'m '+s+'s';
-  set('b-up',upStr);set('uptime-txt','Uptime: '+upStr);
+  const up = d.uptime || 0;
+  const h = Math.floor(up/3600), m = Math.floor((up%3600)/60), s = Math.floor(up%60);
+  const upStr = h + 'h ' + m + 'm ' + s + 's';
+  set('b-up', upStr);
+  set('uptime-txt', 'Uptime: ' + upStr);
 
-  const running=!d.paused;
-  setC('b-state',running?'Actif':'PAUSE',running?'val g':'val o');
-  set('b-alerts',d.alerts_sent||0);
-  set('b-analyzed',d.tokens_analyzed||0);
-  set('b-proc',d.processing||0);
-  setC('b-ws',d.ws_active?'Actif':'Inactif',d.ws_active?'val g':'val r');
+  const running = !d.paused;
+  setC('b-state', running ? 'Actif' : 'PAUSE', running ? 'val g' : 'val o');
+  set('b-alerts', d.alerts_sent || 0);
+  set('b-analyzed', d.tokens_analyzed || 0);
+  set('b-proc', d.processing || 0);
+  setC('b-ws', d.ws_active ? 'Actif' : 'Inactif', d.ws_active ? 'val g' : 'val r');
 
-  const mkt=d.market||{};
-  setChg('m-btc',mkt.btc_24h);setChg('m-sol',mkt.sol_24h);
-  set('m-fg',mkt.fear_greed||'--');set('m-mood',mkt.regime||'--');
+  const mkt = d.market || {};
+  setChg('m-btc', mkt.btc_24h);
+  setChg('m-sol', mkt.sol_24h);
+  set('m-fg', mkt.fear_greed || '--');
+  set('m-mood', mkt.regime || '--');
 
-  const saf=d.safety||{};
-  set('s-total',saf.total||0);set('s-blocked',saf.blocked||0);
-  set('s-honey',saf.honey||0);set('s-liq',saf.liq||0);
-  const rate=saf.total>0?((saf.blocked/saf.total)*100).toFixed(0)+'%':'0%';
-  set('s-rate',rate);
+  const saf = d.safety || {};
+  set('s-total', saf.total || 0);
+  set('s-blocked', saf.blocked || 0);
+  set('s-honey', saf.honey || 0);
+  set('s-liq', saf.liq || 0);
+  const rate = saf.total > 0 ? ((saf.blocked / saf.total) * 100).toFixed(0) + '%' : '0%';
+  set('s-rate', rate);
 
-  set('src-pump-n',d.tokens_analyzed||0);
-  set('src-copy-n',d.copy_trades||0);
-  set('src-tw-n',d.twitter_signals||0);
-  set('src-wh-n',d.whale_signals||0);
+  set('src-pump-n', d.tokens_analyzed || 0);
+  set('src-copy-n', d.copy_trades || 0);
+  set('src-tw-n', d.twitter_signals || 0);
+  set('src-wh-n', d.whale_signals || 0);
 
-  if(d.events&&d.events.length){d.events.forEach(ev=>addFeed(ev))}
+  if(d.events && d.events.length){
+    d.events.forEach(ev => addFeed(ev));
+  }
 }
 
-function set(id,val){const el=document.getElementById(id);if(el)el.textContent=val}
-function setC(id,val,cls){const el=document.getElementById(id);if(!el)return;el.textContent=val;el.className=cls||'val'}
-function setChg(id,val){const el=document.getElementById(id);if(!el)return;
-  if(val===undefined||val===null){el.textContent='--';return}
-  el.textContent=(val>=0?'+':'')+val.toFixed(1)+'%';el.className='val '+(val>=0?'g':'r')}
-function addFeed(msg){const feed=document.getElementById('feed');
-  const now=new Date().toLocaleTimeString('fr-FR');
-  const line=document.createElement('div');line.className='feed-line';
-  line.innerHTML='<span class="feed-time">'+now+'</span><span>'+msg+'</span>';
-  feed.prepend(line);while(feed.children.length>60)feed.removeChild(feed.lastChild)}
+function set(id, val){
+  const el = document.getElementById(id);
+  if(el) el.textContent = val;
+}
+function setC(id, val, cls){
+  const el = document.getElementById(id);
+  if(!el) return;
+  el.textContent = val;
+  el.className = cls || 'val';
+}
+function setChg(id, val){
+  const el = document.getElementById(id);
+  if(!el) return;
+  if(val === undefined || val === null){ el.textContent = '--'; return; }
+  el.textContent  = (val >= 0 ? '+' : '') + val.toFixed(1) + '%';
+  el.className = 'val ' + (val >= 0 ? 'g' : 'r');
+}
+function addFeed(msg){
+  const feed = document.getElementById('feed');
+  const now = new Date().toLocaleTimeString('fr-FR');
+  const line = document.createElement('div');
+  line.className = 'feed-line';
+  line.innerHTML = '<span class="feed-time">' + now + '</span><span>' + msg + '</span>';
+  feed.prepend(line);
+  while(feed.children.length > 60) feed.removeChild(feed.lastChild);
+}
 
 connect();
 </script>
@@ -199,23 +224,23 @@ connect();
 </html>"""
 
 
-# ════════════════════════════════════════
-# SERVEUR DASHBOARD
-# ════════════════════════════════════════
-
 class DashboardServer:
 
-    def __init__(self, bot, host="127.0.0.1", port=8080):
-        self.bot  = bot
-        self.host = host
-        self.port = port
-        self.app  = FastAPI(title="MemeSniper Dashboard", docs_url=None)
+    def __init__(self, bot, host="0.0.0.0", port=8080):
+        self.bot = bot
+        self.port = int(
+            os.environ.get("PORT") or
+            os.environ.get("DASHBOARD_PORT") or
+            port
+        )
+        self.host = os.environ.get("DASHBOARD_HOST", host)
+
+        self.app = FastAPI(title="MemeSniper Dashboard", docs_url=None)
         self._clients = []
-        self._events  = []
+        self._events = []
 
         self.safety_stats = {
-            "total": 0, "blocked": 0,
-            "honey": 0, "liq": 0
+            "total": 0, "blocked": 0, "honey": 0, "liq": 0
         }
 
         self._setup_routes()
@@ -226,6 +251,14 @@ class DashboardServer:
         @app.get("/", response_class=HTMLResponse)
         async def index():
             return HTML
+
+        @app.get("/health")
+        async def health():
+            return {
+                "status": "ok",
+                "service": "MemeSniper v12.0",
+                "uptime": time.time() - getattr(self.bot, 'start_time', time.time()),
+            }
 
         @app.get("/api/status")
         async def api_status():
@@ -242,50 +275,48 @@ class DashboardServer:
                     self._events.clear()
                     await asyncio.sleep(3)
             except (WebSocketDisconnect, Exception):
+                pass
+            finally:
                 if ws in self._clients:
                     self._clients.remove(ws)
 
     def _collect(self):
-        """Collecte les données du bot"""
         bot = self.bot
         uptime = time.time() - getattr(bot, 'start_time', time.time())
 
-        # Market context
         market = {}
         try:
             sig = bot.market_context.get_market_signal()
             market = {
-                "btc_24h":    sig.get("btc_change_24h"),
-                "sol_24h":    sig.get("sol_change_24h"),
+                "btc_24h": sig.get("btc_change_24h"),
+                "sol_24h": sig.get("sol_change_24h"),
                 "fear_greed": sig.get("fear_greed"),
-                "regime":     sig.get("regime", "?"),
+                "regime": sig.get("regime", "?"),
             }
         except Exception:
             pass
 
         return {
-            "uptime":          uptime,
-            "paused":          getattr(bot, 'paused', False),
-            "alerts_sent":     getattr(bot, 'alerts_sent', 0),
+            "uptime": uptime,
+            "paused": getattr(bot, 'paused', False),
+            "alerts_sent": getattr(bot, 'alerts_sent', 0),
             "tokens_analyzed": getattr(bot, 'tokens_analyzed', 0),
-            "processing":      len(getattr(bot, 'processing_tokens', set())),
-            "ws_active":       getattr(bot, 'ws_active', False),
-            "copy_trades":     getattr(bot, 'copy_trades', 0),
+            "processing": len(getattr(bot, 'processing_tokens', set())),
+            "ws_active": getattr(bot, 'ws_active', False),
+            "copy_trades": getattr(bot, 'copy_trades', 0),
             "twitter_signals": getattr(bot, 'twitter_signals', 0),
-            "whale_signals":   0,
-            "market":          market,
-            "safety":          self.safety_stats,
-            "events":          list(self._events),
+            "whale_signals": 0,
+            "market": market,
+            "safety": self.safety_stats,
+            "events": list(self._events),
         }
 
-    def add_event(self, msg):
-        """Ajoute un événement au live feed"""
+    def add_event(self, msg: str):
         self._events.append(msg)
         if len(self._events) > 30:
             self._events.pop(0)
 
-    def record_safety(self, result):
-        """Enregistre un résultat safety"""
+    def record_safety(self, result: dict):
         self.safety_stats["total"] += 1
         if not result.get("safe"):
             self.safety_stats["blocked"] += 1
@@ -296,7 +327,6 @@ class DashboardServer:
                 self.safety_stats["liq"] += 1
 
     async def start(self):
-        """Démarre uvicorn"""
         config = uvicorn.Config(
             app=self.app,
             host=self.host,
@@ -305,7 +335,7 @@ class DashboardServer:
             access_log=False,
         )
         server = uvicorn.Server(config)
-        logger.info(f"📊 Dashboard → http://{self.host}:{self.port}")
+        logger.info(f"📊 Dashboard démarré → http://{self.host}:{self.port}")
         await server.serve()
 
     async def stop(self):
