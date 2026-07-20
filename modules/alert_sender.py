@@ -1,17 +1,18 @@
-# modules/alert_sender.py — v6.3 v12.0
-# FIX v6.2 : send_alert() accepte decision en paramètre
-# FIX v6.2 : _send_telegram() ne plante plus avec buttons=None
-# FIX v6.2 : messages Markdown échappés correctement
-# FIX v6.2 : twitter_signal affiché dans le message
+# modules/alert_sender.py — v7.0 v12.7
+# ═══════════════════════════════════════════════
+# v7.0 CHANGEMENTS :
+# + Support envoi de PHOTOS (charts DexScreener)
+# + Méthode _send_telegram_photo() ajoutée
+# + Fallback automatique texte si photo échoue
+# + Nouveau paramètre `chart_url` dans send_alert()
 #
-# NOUVEAU v12.0 :
+# HÉRITÉ v6.3 :
 # + Score sécurité affiché (avec emoji dynamique)
 # + Warnings sécurité affichés (top 3)
-# + Bouton Jupiter ajouté (backup Photon)
-# + Bouton Solscan ajouté
-# + Bouton Twitter Search dynamique
+# + Bouton Jupiter, Solscan, Twitter Search
 
 import os
+import asyncio
 import aiohttp
 from utils.logger import logger
 from modules.decision_engine import DecisionEngine
@@ -49,7 +50,7 @@ class AlertSender:
             return False
 
         message = (
-            "🤖 *BOT v12\\.0 SAFETY démarré*\n"
+            "🤖 *BOT v12\\.7 démarré*\n"
             "━━━━━━━━━━━━━━\n"
             "✅ Prêt à sniper\n"
             "⭐ Score min : 7\\.5/10\n"
@@ -58,31 +59,38 @@ class AlertSender:
             "🌍 Filtre macro : ON\n"
             "🐋 Alpha wallets : ON \\(15\\)\n"
             "🐦 Twitter : ON \\(7 comptes\\)\n"
-            "📊 Performance : ON\n\n"
+            "📊 Performance : ON\n"
+            "🎯 Bull Analyzer : ON\n"
+            "💰 Sell Signals : ON\n"
+            "📸 Charts photos : ON\n\n"
             "⏳ En attente\\.\\.\\."
         )
         return await self._send_telegram(message, buttons=None)
 
     # ═══════════════════════════════════════════════════
-    # ENVOI PRINCIPAL
-    # FIX : accepte decision en paramètre optionnel
+    # ENVOI PRINCIPAL v7.0
+    # + support chart_url pour envoi photo
     # ═══════════════════════════════════════════════════
 
     async def send_alert(
         self,
         token_data: dict,
         decision:   dict | None = None,
+        chart_url:  str  | None = None,
     ) -> bool:
         """
         Envoie une alerte Telegram.
-        FIX : si decision est fournie (depuis main.py), on ne rappelle
-        pas decide() pour éviter le double appel.
+
+        Args:
+          token_data : données du token
+          decision   : décision (optionnel, sinon recalculée)
+          chart_url  : URL image du chart (optionnel)
+                       Si fournie → envoi en PHOTO au lieu de texte
         """
         self._load_credentials()
         if not self.bot_token or not self.chat_id:
             return False
 
-        # Calcule la décision seulement si pas déjà fournie
         if decision is None:
             decision = self.decision_eng.decide(token_data)
 
@@ -95,6 +103,15 @@ class AlertSender:
         message = self._build_message(token_data, decision)
         buttons = self._build_buttons(token_data, decision)
 
+        # v7.0 : Si chart_url fourni, envoi en PHOTO
+        if chart_url:
+            return await self._send_telegram_photo(
+                photo_url=chart_url,
+                caption=message,
+                buttons=buttons,
+            )
+
+        # Sinon envoi texte normal
         return await self._send_telegram(message, buttons)
 
     # ═══════════════════════════════════════════════════
@@ -123,11 +140,9 @@ class AlertSender:
         sl_pct     = decision.get("sl_pct", 0)
 
         # ── Sécurité v12.0 ────────────────────────────
-        # Utilise le safety check si dispo, sinon fallback ancien
         safety_data = data.get("safety", {})
 
         if safety_data:
-            # Nouveau système v12.0 - score sécurité détaillé
             safety_score    = safety_data.get("score", 10)
             safety_warnings = safety_data.get("warnings", [])
 
@@ -140,7 +155,6 @@ class AlertSender:
             else:
                 safety_emoji = "🚨 RISQUÉ"
         else:
-            # Fallback ancien système
             safety_score    = 10
             safety_warnings = []
             is_safe = (
@@ -150,10 +164,8 @@ class AlertSender:
             )
             safety_emoji = "✅ OK" if is_safe else "⚠️ ATTENTION"
 
-        # ── Titre ─────────────────────────────────────
         title = self._get_title(tier, has_critical, alpha_count)
 
-        # ── Âge formaté ───────────────────────────────
         if age_minutes < 60:
             age_str = f"{age_minutes:.0f}min"
         elif age_minutes < 1440:
@@ -161,7 +173,6 @@ class AlertSender:
         else:
             age_str = f"{age_minutes/1440:.1f}j"
 
-        # ── Noms échappés pour Markdown ───────────────
         name_safe   = self._escape_md(name)
         symbol_safe = self._escape_md(symbol)
 
@@ -173,14 +184,13 @@ class AlertSender:
         lines.append(f"🪙 *{name_safe}* \\(${symbol_safe}\\)")
         lines.append("")
 
-        # 2. Score + Sécurité + montant  (v12.0)
+        # 2. Score + Sécurité + montant
         lines.append(f"⭐ Score: *{score}/10*  |  💰 *{amount_eur}€*")
         lines.append(
             f"🛡️ Sécurité: *{safety_score}/10*  {safety_emoji}"
         )
         lines.append(f"🎯 Profit espéré : *\\+{profit_pct:.0f}%*")
 
-        # Warnings sécurité si présents (v12.0)
         if safety_warnings:
             lines.append("")
             lines.append("⚠️ *Points d'attention:*")
@@ -218,26 +228,22 @@ class AlertSender:
             f"Prix {price_sign}{price_1h:.0f}% \\(1h\\)"
         )
 
-        # Alpha wallets
         if alpha_count > 0:
             lines.append(
                 f"  🐋 *{alpha_count} alpha wallet\\(s\\) détecté\\(s\\)*"
             )
 
-        # Twitter signal
         tw = data.get("twitter_signal")
         if tw:
             tw_user = self._escape_md(tw.get("username", ""))
             tw_tier = self._escape_md(tw.get("best_tier", ""))
             lines.append(f"  🐦 *@{tw_user}* \\({tw_tier}\\)")
 
-        # Smart signals
         if has_critical:
             lines.append("  🚨 *SIGNAL CRITIQUE*")
         elif smart_count >= 3:
             lines.append(f"  🧠 {smart_count} smart signals")
 
-        # Contexte marché
         if self.market_context:
             try:
                 sig    = self.market_context.get_market_signal()
@@ -285,7 +291,6 @@ class AlertSender:
     # ═══════════════════════════════════════════════════
 
     def _fmt_number(self, num: float) -> str:
-        """Formate un nombre : 85000 → 85K, 1200000 → 1.2M"""
         try:
             num = float(num or 0)
             if num >= 1_000_000:
@@ -297,10 +302,6 @@ class AlertSender:
             return "0"
 
     def _escape_md(self, text: str) -> str:
-        """
-        FIX : échappe les caractères spéciaux Telegram MarkdownV2.
-        Sans ça, les noms de tokens avec des - . ( ) etc font planter.
-        """
         if not text:
             return ""
         special = r"\_*[]()~`>#+-=|{}.!"
@@ -313,10 +314,7 @@ class AlertSender:
         return result
 
     # ═══════════════════════════════════════════════════
-    # BOUTONS v12.0
-    # + Jupiter (backup si Photon down)
-    # + Solscan (analyse on-chain)
-    # + Twitter Search (buzz check dynamique)
+    # BOUTONS
     # ═══════════════════════════════════════════════════
 
     def _build_buttons(
@@ -325,7 +323,6 @@ class AlertSender:
         address = data.get("address", "")
         symbol  = data.get("symbol", "")
 
-        # Bouton Twitter dynamique selon si on a un symbole
         if symbol and symbol != "???":
             twitter_button = {
                 "text": f"🐦 Twitter ${symbol}",
@@ -339,12 +336,10 @@ class AlertSender:
 
         return {
             "inline_keyboard": [
-                # Ligne 1 - Achat rapide Photon (le plus rapide)
                 [{
                     "text": "🚀 ACHETER SUR PHOTON",
                     "url":  f"https://photon-sol.tinyastro.io/en/lp/{address}",
                 }],
-                # Ligne 2 - Chart + Safety
                 [
                     {
                         "text": "📊 Chart",
@@ -355,7 +350,6 @@ class AlertSender:
                         "url":  f"https://rugcheck.xyz/tokens/{address}",
                     },
                 ],
-                # Ligne 3 - Jupiter (backup) + Solscan (v12.0)
                 [
                     {
                         "text": "💱 Jupiter",
@@ -366,15 +360,12 @@ class AlertSender:
                         "url":  f"https://solscan.io/token/{address}",
                     },
                 ],
-                # Ligne 4 - Twitter search (v12.0)
                 [twitter_button],
             ]
         }
 
     # ═══════════════════════════════════════════════════
-    # ENVOI TELEGRAM
-    # FIX : buttons=None ne plante plus
-    # FIX : parse_mode MarkdownV2 pour meilleur rendu
+    # ENVOI TELEGRAM TEXTE
     # ═══════════════════════════════════════════════════
 
     async def _send_telegram(
@@ -382,11 +373,7 @@ class AlertSender:
         message: str,
         buttons: dict | None = None,
     ) -> bool:
-        """
-        Envoie un message Telegram.
-        FIX : n'inclut reply_markup que si buttons est fourni.
-        FIX : retry automatique si rate limit (429).
-        """
+        """Envoie un message texte Telegram."""
         if not self.bot_token or not self.chat_id:
             logger.error("[ALERT] Credentials manquants")
             return False
@@ -404,11 +391,9 @@ class AlertSender:
                 "disable_web_page_preview": True,
             }
 
-            # FIX : n'ajoute reply_markup QUE si buttons est fourni
             if buttons:
                 payload["reply_markup"] = buttons
 
-            # FIX : retry sur rate limit
             for attempt in range(3):
                 async with session.post(
                     url,
@@ -421,7 +406,6 @@ class AlertSender:
                         logger.info("[ALERT] ✅ Message Telegram envoyé")
                         return True
 
-                    # Rate limit → attendre et réessayer
                     if resp.status == 429:
                         retry_after = result.get(
                             "parameters", {}
@@ -430,11 +414,9 @@ class AlertSender:
                             f"[ALERT] ⏳ Rate limit, attente "
                             f"{retry_after}s (tentative {attempt+1}/3)"
                         )
-                        import asyncio
                         await asyncio.sleep(retry_after)
                         continue
 
-                    # Erreur Markdown → fallback sans formatage
                     if resp.status == 400:
                         error_desc = result.get(
                             "description", ""
@@ -462,15 +444,93 @@ class AlertSender:
             logger.error(f"[ALERT] Exception: {e}")
             return False
 
+    # ═══════════════════════════════════════════════════
+    # ENVOI TELEGRAM PHOTO v7.0 🆕
+    # ═══════════════════════════════════════════════════
+
+    async def _send_telegram_photo(
+        self,
+        photo_url: str,
+        caption:   str,
+        buttons:   dict | None = None,
+    ) -> bool:
+        """
+        Envoie une PHOTO Telegram avec caption.
+        Utilisé pour envoyer les charts DexScreener.
+
+        Si l'envoi photo échoue → fallback vers envoi texte.
+        """
+        if not self.bot_token or not self.chat_id:
+            logger.error("[ALERT] Credentials manquants")
+            return False
+
+        try:
+            session = await self._get_session()
+            url     = (
+                f"https://api.telegram.org/bot"
+                f"{self.bot_token}/sendPhoto"
+            )
+
+            # Telegram limite le caption à 1024 caractères
+            # Si trop long, on tronque et on ajoute "..."
+            if len(caption) > 1024:
+                caption = caption[:1020] + "\\.\\.\\."
+
+            payload: dict = {
+                "chat_id":    self.chat_id,
+                "photo":      photo_url,
+                "caption":    caption,
+                "parse_mode": "MarkdownV2",
+            }
+
+            if buttons:
+                payload["reply_markup"] = buttons
+
+            for attempt in range(2):  # 2 tentatives seulement
+                async with session.post(
+                    url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    result = await resp.json()
+
+                    if resp.status == 200 and result.get("ok"):
+                        logger.info(
+                            "[ALERT] ✅ Photo Telegram envoyée"
+                        )
+                        return True
+
+                    if resp.status == 429:
+                        retry_after = result.get(
+                            "parameters", {}
+                        ).get("retry_after", 5)
+                        logger.warning(
+                            f"[ALERT] ⏳ Rate limit photo, "
+                            f"attente {retry_after}s"
+                        )
+                        await asyncio.sleep(retry_after)
+                        continue
+
+                    # Photo failed → fallback texte
+                    logger.warning(
+                        f"[ALERT] ⚠️ Photo échec ({resp.status}), "
+                        f"fallback texte"
+                    )
+                    return await self._send_telegram(caption, buttons)
+
+            # Toutes tentatives échouées → fallback texte
+            logger.warning("[ALERT] Photo échec total, fallback texte")
+            return await self._send_telegram(caption, buttons)
+
+        except Exception as e:
+            logger.error(f"[ALERT] Photo exception: {e}")
+            # Fallback texte en cas d'erreur
+            return await self._send_telegram(caption, buttons)
+
     def _strip_markdown(self, text: str) -> str:
-        """
-        FIX : supprime tous les caractères Markdown pour le fallback.
-        Utilisé quand MarkdownV2 échoue.
-        """
+        """Supprime les caractères Markdown pour le fallback."""
         import re
-        # Supprime les échappements MarkdownV2
         text = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!])', r'\1', text)
-        # Supprime les balises restantes
         text = re.sub(r'[*_`]', '', text)
         return text
 

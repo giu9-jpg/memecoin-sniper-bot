@@ -1,10 +1,11 @@
-# main.py — v12.6 FINAL
+# main.py — v12.7 FINAL
 # Bot Sniper Memecoin Solana - Ultimate Edition
 # ═══════════════════════════════════════════════
 # ✅ TokenSafety v1.2 (fix pump.fun timing)
 # ✅ Bull Run Analyzer v1.0 (apprentissage auto)
 # ✅ Backtester v1.0 (simulation historique)
-# ✅ Sell Signal Generator v1.0 (quand vendre) 🆕
+# ✅ Sell Signal Generator v1.0 (quand vendre)
+# ✅ Chart Screenshot v1.0 (photos dans alertes) 🆕
 # ✅ Copy Trading + Early Detector + Whale Inflow
 # ✅ Momentum Detector v1.2
 # ✅ ML Scorer + Dashboard + Multi-DEX
@@ -42,6 +43,7 @@ from modules.ml_scorer             import MLScorer
 from modules.bull_run_analyzer     import BullRunAnalyzer
 from modules.backtester            import Backtester
 from modules.sell_signal_generator import SellSignalGenerator
+from modules.chart_screenshot      import ChartScreenshot
 
 from config.alpha_wallets        import (
     ALPHA_WALLETS,
@@ -104,6 +106,9 @@ class MemeSniper:
             alert_callback=self.handle_sell_signal
         )
         self.sell_alerts_sent = 0
+
+        # ── Chart Screenshot v12.7 ────────────────────
+        self.chart_screenshot = ChartScreenshot()
 
         self.analyzer = TokenAnalyzer(
             alpha_tracker=self.alpha_tracker,
@@ -198,6 +203,12 @@ class MemeSniper:
         except Exception as e:
             logger.error(f"❌ Impossible de démarrer SellSignalGenerator : {e}")
 
+        try:
+            await self.chart_screenshot.start()
+            logger.info("📸 ChartScreenshot v1.0 : ACTIF")
+        except Exception as e:
+            logger.error(f"❌ Impossible de démarrer ChartScreenshot : {e}")
+
         total_wallets = len(get_all_wallets())
         t1            = len(ALPHA_WALLETS.get("TIER1",   []))
         t15           = len(ALPHA_WALLETS.get("TIER1_5", []))
@@ -210,7 +221,7 @@ class MemeSniper:
 
         ml_stats = self.ml_scorer.get_stats()
 
-        logger.info("🚀 MemeSniper v12.6 FINAL démarré !")
+        logger.info("🚀 MemeSniper v12.7 FINAL démarré !")
         logger.info(f"   Score minimum      : {MIN_SCORE}/10")
         logger.info(f"   Smart Signals      : ACTIVÉS")
         logger.info(f"   Market Context     : ACTIF")
@@ -218,6 +229,7 @@ class MemeSniper:
         logger.info(f"   Bull Analyzer      : ACTIF (v1.0)")
         logger.info(f"   Backtester         : ACTIF (v1.0)")
         logger.info(f"   Sell Signals       : ACTIF (v1.0)")
+        logger.info(f"   Chart Screenshot   : ACTIF (v1.0)")
         logger.info(
             f"   Alpha Wallets      : ACTIF "
             f"({total_wallets} wallets | "
@@ -814,7 +826,7 @@ class MemeSniper:
             dash_str = self._esc(dash_str)
 
         msg = (
-            f"🤖 *MemeSniper v12\\.6 FINAL*\n"
+            f"🤖 *MemeSniper v12\\.7 FINAL*\n"
             f"━━━━━━━━━━━━━━\n\n"
             f"⏱ Uptime: `{h}h {m}m {s}s`\n"
             f"🔄 État: *{self._esc(pause_str)}*\n"
@@ -825,6 +837,7 @@ class MemeSniper:
             f"🎯 Bull Analyzer: ✅ `{n_bulls}` bulls\n"
             f"📊 Backtester: ✅ Actif\n"
             f"💰 Sell Signals: ✅ `{sell_st['positions_open']}` positions\n"
+            f"📸 Chart Photos: ✅ Actif\n"
             f"🧠 ML: {ml_st.get('trades', 0)} trades\n"
             f"{dash_str}\n"
             f"📊 *Activité:*\n"
@@ -1288,7 +1301,6 @@ class MemeSniper:
             )
             return
 
-        # Fetch data actuelle
         try:
             data = await self.sell_generator._fetch_token_data(mint)
             if not data or data.get("price", 0) == 0:
@@ -1298,10 +1310,9 @@ class MemeSniper:
                 )
                 return
 
-            # Ajouter position
             self.sell_generator.add_position(
                 mint=mint,
-                symbol="?",  # sera update
+                symbol="?",
                 entry_price=data["price"],
                 entry_mc=data["market_cap"],
                 entry_liquidity=data["liquidity"],
@@ -1333,11 +1344,9 @@ class MemeSniper:
         positions = self.sell_generator.get_positions()
         target_mint = None
 
-        # Cherche par mint direct
         if symbol_or_mint in positions:
             target_mint = symbol_or_mint
         else:
-            # Cherche par symbol
             for mint, pos in positions.items():
                 if pos["symbol"].upper() == symbol_or_mint.upper():
                     target_mint = mint
@@ -1384,7 +1393,7 @@ class MemeSniper:
 
     async def _cmd_help(self):
         msg = (
-            "🤖 *MemeSniper v12\\.6 FINAL*\n"
+            "🤖 *MemeSniper v12\\.7 FINAL*\n"
             "━━━━━━━━━━━━━━\n\n"
             "📊 *Info:*\n"
             "/status \\- État du bot\n"
@@ -1392,7 +1401,7 @@ class MemeSniper:
             "/alertes \\- 10 dernières alertes\n"
             "/bullrun \\- Analyse des bulls\n"
             "/backtest \\- Simuler réglages\n\n"
-            "💰 *Positions \\(Sell Signals\\) 🆕*\n"
+            "💰 *Positions \\(Sell Signals\\)*\n"
             "/positions \\- Voir positions\n"
             "/watch `<mint>` \\- Surveiller token\n"
             "/close `<symbol>` \\- Fermer position\n\n"
@@ -1599,7 +1608,23 @@ class MemeSniper:
                 ],
             ]
 
-            await self.alert_sender._send_telegram(msg, buttons=buttons)
+            # v12.7 : Tenter d'envoyer avec chart
+            chart_url = None
+            try:
+                chart_url = await self.chart_screenshot.get_chart_url(mint)
+            except Exception as e:
+                logger.debug(f"Chart fetch error momentum : {e}")
+
+            if chart_url:
+                await self.alert_sender._send_telegram_photo(
+                    photo_url=chart_url,
+                    caption=msg,
+                    buttons={"inline_keyboard": buttons},
+                )
+            else:
+                await self.alert_sender._send_telegram(
+                    msg, buttons={"inline_keyboard": buttons}
+                )
 
             self.momentum_alerts += 1
 
@@ -1634,7 +1659,6 @@ class MemeSniper:
             confidence   = signal_data["confidence"]
             current_mc   = signal_data["current_mc"]
 
-            # Emoji selon PnL
             if pnl >= 100:
                 pnl_emoji = "🚀"
             elif pnl >= 50:
@@ -1646,7 +1670,6 @@ class MemeSniper:
             else:
                 pnl_emoji = "🛑"
 
-            # Emoji urgence
             has_sl = any(s["type"] == "SL" for s in signals)
             has_tp = any(s["type"] == "TP" for s in signals)
 
@@ -1677,7 +1700,7 @@ class MemeSniper:
                 f"⚠️ *SIGNAUX \\({len(signals)}\\) :*",
             ]
 
-            for sig in signals[:5]:  # Max 5 signaux
+            for sig in signals[:5]:
                 sig_msg = self._esc(sig['message'])
                 msg_lines.append(f"  • {sig_msg}")
 
@@ -1706,7 +1729,9 @@ class MemeSniper:
                 ],
             ]
 
-            await self.alert_sender._send_telegram(msg, buttons=buttons)
+            await self.alert_sender._send_telegram(
+                msg, buttons={"inline_keyboard": buttons}
+            )
 
             self.sell_alerts_sent += 1
 
@@ -1909,8 +1934,15 @@ class MemeSniper:
                 )
                 return
 
+            # v12.7 : Récupérer le chart pour l'envoyer avec l'alerte
+            chart_url = None
+            try:
+                chart_url = await self.chart_screenshot.get_chart_url(address)
+            except Exception as e:
+                logger.debug(f"Chart fetch error : {e}")
+
             sent = await self.alert_sender.send_alert(
-                analysis, decision=decision,
+                analysis, decision=decision, chart_url=chart_url,
             )
 
             if sent:
@@ -1929,7 +1961,6 @@ class MemeSniper:
                     )
 
                     # ═══ SELL SIGNAL v12.6 ═══
-                    # Ajouter automatiquement au sell generator
                     try:
                         sell_data = await self.sell_generator._fetch_token_data(address)
                         if sell_data and sell_data.get("price", 0) > 0:
@@ -2050,6 +2081,13 @@ async def cleanup_all(bot: MemeSniper):
             logger.info("[CLEANUP] ✅ SellSignalGenerator arrêté")
     except Exception as e:
         logger.error(f"[CLEANUP] sell_generator.stop() : {e}")
+
+    try:
+        if bot.chart_screenshot:
+            await bot.chart_screenshot.stop()
+            logger.info("[CLEANUP] ✅ ChartScreenshot arrêté")
+    except Exception as e:
+        logger.error(f"[CLEANUP] chart_screenshot.stop() : {e}")
 
     try:
         if bot.dashboard:
