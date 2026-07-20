@@ -1,9 +1,10 @@
-# main.py — v12.5 FINAL
+# main.py — v12.6 FINAL
 # Bot Sniper Memecoin Solana - Ultimate Edition
 # ═══════════════════════════════════════════════
 # ✅ TokenSafety v1.2 (fix pump.fun timing)
 # ✅ Bull Run Analyzer v1.0 (apprentissage auto)
-# ✅ Backtester v1.0 (simulation historique)  🆕
+# ✅ Backtester v1.0 (simulation historique)
+# ✅ Sell Signal Generator v1.0 (quand vendre) 🆕
 # ✅ Copy Trading + Early Detector + Whale Inflow
 # ✅ Momentum Detector v1.2
 # ✅ ML Scorer + Dashboard + Multi-DEX
@@ -21,25 +22,26 @@ load_dotenv()
 from utils.logger import logger
 from utils.config_loader import load_config
 
-from modules.pump_portal_ws      import PumpPortalWebSocket
-from modules.pump_fun_monitor    import PumpFunMonitor
-from modules.token_analyzer      import TokenAnalyzer
-from modules.alert_sender        import AlertSender
-from modules.whale_tracker       import WhaleTracker
-from modules.position_tracker    import PositionTracker
-from modules.market_context      import MarketContext
-from modules.alpha_tracker       import AlphaTracker
-from modules.performance_tracker import PerformanceTracker
-from modules.early_detector      import EarlyDetector
-from modules.whale_inflow        import WhaleInflowTracker
-from modules.twitter_tracker     import TwitterTracker
-from modules.token_safety        import TokenSafety
-from modules.dashboard           import DashboardServer
-from modules.raydium_monitor     import RadyiumMonitor
-from modules.momentum_detector   import MomentumDetector
-from modules.ml_scorer           import MLScorer
-from modules.bull_run_analyzer   import BullRunAnalyzer
-from modules.backtester          import Backtester
+from modules.pump_portal_ws        import PumpPortalWebSocket
+from modules.pump_fun_monitor      import PumpFunMonitor
+from modules.token_analyzer        import TokenAnalyzer
+from modules.alert_sender          import AlertSender
+from modules.whale_tracker         import WhaleTracker
+from modules.position_tracker      import PositionTracker
+from modules.market_context        import MarketContext
+from modules.alpha_tracker         import AlphaTracker
+from modules.performance_tracker   import PerformanceTracker
+from modules.early_detector        import EarlyDetector
+from modules.whale_inflow          import WhaleInflowTracker
+from modules.twitter_tracker       import TwitterTracker
+from modules.token_safety          import TokenSafety
+from modules.dashboard             import DashboardServer
+from modules.raydium_monitor       import RadyiumMonitor
+from modules.momentum_detector     import MomentumDetector
+from modules.ml_scorer             import MLScorer
+from modules.bull_run_analyzer     import BullRunAnalyzer
+from modules.backtester            import Backtester
+from modules.sell_signal_generator import SellSignalGenerator
 
 from config.alpha_wallets        import (
     ALPHA_WALLETS,
@@ -96,6 +98,12 @@ class MemeSniper:
 
         # ── Backtester v12.5 ──────────────────────────
         self.backtester = Backtester(self.bull_analyzer)
+
+        # ── Sell Signal Generator v12.6 ───────────────
+        self.sell_generator = SellSignalGenerator(
+            alert_callback=self.handle_sell_signal
+        )
+        self.sell_alerts_sent = 0
 
         self.analyzer = TokenAnalyzer(
             alpha_tracker=self.alpha_tracker,
@@ -184,6 +192,12 @@ class MemeSniper:
         except Exception as e:
             logger.error(f"❌ Impossible de démarrer BullRunAnalyzer : {e}")
 
+        try:
+            await self.sell_generator.start()
+            logger.info("💰 SellSignalGenerator v1.0 : ACTIF")
+        except Exception as e:
+            logger.error(f"❌ Impossible de démarrer SellSignalGenerator : {e}")
+
         total_wallets = len(get_all_wallets())
         t1            = len(ALPHA_WALLETS.get("TIER1",   []))
         t15           = len(ALPHA_WALLETS.get("TIER1_5", []))
@@ -196,13 +210,14 @@ class MemeSniper:
 
         ml_stats = self.ml_scorer.get_stats()
 
-        logger.info("🚀 MemeSniper v12.5 FINAL démarré !")
+        logger.info("🚀 MemeSniper v12.6 FINAL démarré !")
         logger.info(f"   Score minimum      : {MIN_SCORE}/10")
         logger.info(f"   Smart Signals      : ACTIVÉS")
         logger.info(f"   Market Context     : ACTIF")
         logger.info(f"   Anti-Rug Safety    : ACTIF (v1.2)")
         logger.info(f"   Bull Analyzer      : ACTIF (v1.0)")
         logger.info(f"   Backtester         : ACTIF (v1.0)")
+        logger.info(f"   Sell Signals       : ACTIF (v1.0)")
         logger.info(
             f"   Alpha Wallets      : ACTIF "
             f"({total_wallets} wallets | "
@@ -565,6 +580,7 @@ class MemeSniper:
                     f"raydium_seen="
                     f"{len(self.raydium_monitor.seen_tokens)} | "
                     f"bulls={len(self.bull_analyzer.bulls)} | "
+                    f"positions={self.sell_generator.get_positions_count()} | "
                     f"gc={collected}"
                 )
             except asyncio.CancelledError:
@@ -598,6 +614,7 @@ class MemeSniper:
                     regime = "N/A"
 
                 ml_st = self.ml_scorer.get_stats()
+                sell_st = self.sell_generator.get_stats()
 
                 logger.info(
                     f"[HEALTH] "
@@ -611,6 +628,7 @@ class MemeSniper:
                     f"Raydium:{self.raydium_tokens} | "
                     f"Momentum:{self.momentum_alerts} | "
                     f"Bulls:{len(self.bull_analyzer.bulls)} | "
+                    f"Sells:{sell_st['positions_open']}pos/{sell_st['total_signals']}sig | "
                     f"ML:{ml_st.get('trades', 0)} trades | "
                     f"Positions:{n_pos} | "
                     f"Marché:{regime} | "
@@ -724,17 +742,26 @@ class MemeSniper:
             await self._cmd_backtest(text[10:].strip())
             return
 
+        if text_lower.startswith("/watch "):
+            await self._cmd_watch(text[7:].strip())
+            return
+
+        if text_lower.startswith("/close "):
+            await self._cmd_close(text[7:].strip())
+            return
+
         routes = {
-            "/status":   self._cmd_status,
-            "/stats":    self._cmd_stats,
-            "/alertes":  self._cmd_alertes,
-            "/mlstats":  self._cmd_mlstats,
-            "/bullrun":  self._cmd_bullrun,
-            "/backtest": self._cmd_backtest,
-            "/pause":    self._cmd_pause,
-            "/resume":   self._cmd_resume,
-            "/help":     self._cmd_help,
-            "/start":    self._cmd_help,
+            "/status":    self._cmd_status,
+            "/stats":     self._cmd_stats,
+            "/alertes":   self._cmd_alertes,
+            "/mlstats":   self._cmd_mlstats,
+            "/bullrun":   self._cmd_bullrun,
+            "/backtest":  self._cmd_backtest,
+            "/positions": self._cmd_positions,
+            "/pause":     self._cmd_pause,
+            "/resume":    self._cmd_resume,
+            "/help":      self._cmd_help,
+            "/start":     self._cmd_help,
         }
 
         handler = routes.get(text_lower)
@@ -775,6 +802,7 @@ class MemeSniper:
 
         ml_st = self.ml_scorer.get_stats()
         n_bulls = len(self.bull_analyzer.bulls)
+        sell_st = self.sell_generator.get_stats()
 
         dash_str = ""
         if self.dashboard:
@@ -786,7 +814,7 @@ class MemeSniper:
             dash_str = self._esc(dash_str)
 
         msg = (
-            f"🤖 *MemeSniper v12\\.5 FINAL*\n"
+            f"🤖 *MemeSniper v12\\.6 FINAL*\n"
             f"━━━━━━━━━━━━━━\n\n"
             f"⏱ Uptime: `{h}h {m}m {s}s`\n"
             f"🔄 État: *{self._esc(pause_str)}*\n"
@@ -796,11 +824,13 @@ class MemeSniper:
             f"🔥 Momentum: ✅ Actif \\(v1\\.2\\)\n"
             f"🎯 Bull Analyzer: ✅ `{n_bulls}` bulls\n"
             f"📊 Backtester: ✅ Actif\n"
+            f"💰 Sell Signals: ✅ `{sell_st['positions_open']}` positions\n"
             f"🧠 ML: {ml_st.get('trades', 0)} trades\n"
             f"{dash_str}\n"
             f"📊 *Activité:*\n"
             f"  Tokens analysés: `{self.tokens_analyzed}`\n"
             f"  Alertes envoyées: `{self.alerts_sent}`\n"
+            f"  Sell alerts: `{self.sell_alerts_sent}`\n"
             f"  Copy trades: `{self.copy_trades}`\n"
             f"  Twitter signals: `{self.twitter_signals}`\n"
             f"  Raydium tokens: `{self.raydium_tokens}`\n"
@@ -1065,14 +1095,7 @@ class MemeSniper:
         await self._send_reply(msg)
 
     async def _cmd_backtest(self, args: str = ""):
-        """
-        Commande /backtest [min_liquidity] [days]
-
-        Exemples :
-          /backtest              → paramètres par défaut (30j)
-          /backtest 1000         → simule avec min_liq $1K
-          /backtest 1000 7       → simule avec min_liq $1K sur 7 jours
-        """
+        """Commande /backtest [min_liquidity] [days]"""
         parts = args.split() if args else []
 
         min_liquidity = 5_000
@@ -1193,6 +1216,149 @@ class MemeSniper:
         msg = "\n".join(lines)
         await self._send_reply(msg)
 
+    async def _cmd_positions(self):
+        """Commande /positions - Voir positions surveillées"""
+        positions = self.sell_generator.get_positions()
+
+        if not positions:
+            msg = (
+                f"💰 *POSITIONS SURVEILLÉES*\n"
+                f"━━━━━━━━━━━━━━\n\n"
+                f"📭 Aucune position ouverte\\.\n\n"
+                f"💡 *Pour ajouter une position :*\n"
+                f"`/watch <mint>`\n\n"
+                f"Exemple :\n"
+                f"`/watch 7xKXtg2CW...`\n\n"
+                f"⚡ Les alertes ACHÈTE ajoutent\n"
+                f"automatiquement les positions\\."
+            )
+            await self._send_reply(msg)
+            return
+
+        lines = [
+            f"💰 *POSITIONS SURVEILLÉES*",
+            f"━━━━━━━━━━━━━━",
+            f"",
+            f"📊 Total : `{len(positions)}` positions",
+            f"",
+        ]
+
+        for i, (mint, pos) in enumerate(list(positions.items())[:10], 1):
+            elapsed = (time.time() - pos["entry_time"]) / 60
+            if elapsed < 60:
+                elapsed_str = f"{elapsed:.0f}min"
+            else:
+                elapsed_str = f"{elapsed/60:.1f}h"
+
+            symbol = pos["symbol"]
+            entry_mc = pos["entry_mc"]
+            max_gain = pos["max_gain"]
+            tps = len(pos["tp_triggered"])
+
+            lines.append(f"━━━━━━━━━━━━━━")
+            lines.append(
+                f"`{i}\\.` *${self._esc(symbol)}*"
+            )
+            lines.append(
+                f"  Entry MC : `${entry_mc/1000:.0f}K`"
+            )
+            lines.append(
+                f"  Max gain : `\\+{max_gain:.0f}%`"
+            )
+            lines.append(
+                f"  TPs : `{tps}/4` | SL : "
+                f"{'🛑' if pos['sl_triggered'] else '✅'}"
+            )
+            lines.append(
+                f"  Ouvert : `{elapsed_str}`"
+            )
+            lines.append("")
+
+        lines.append(f"💡 `/close <symbol>` pour fermer")
+
+        msg = "\n".join(lines)
+        await self._send_reply(msg)
+
+    async def _cmd_watch(self, mint: str):
+        """Commande /watch <mint> - Ajouter position manuellement"""
+        if not mint or len(mint) < 32:
+            await self._send_reply(
+                "❌ Format : `/watch <adresse_mint>`\n"
+                "Exemple : `/watch 7xKXtg2CW\\.\\.\\.`"
+            )
+            return
+
+        # Fetch data actuelle
+        try:
+            data = await self.sell_generator._fetch_token_data(mint)
+            if not data or data.get("price", 0) == 0:
+                await self._send_reply(
+                    f"❌ Impossible de récupérer les données\\.\n"
+                    f"Le token existe\\-t\\-il ?"
+                )
+                return
+
+            # Ajouter position
+            self.sell_generator.add_position(
+                mint=mint,
+                symbol="?",  # sera update
+                entry_price=data["price"],
+                entry_mc=data["market_cap"],
+                entry_liquidity=data["liquidity"],
+                entry_buy_ratio=data["buy_ratio"],
+                entry_volume_1h=data["volume_1h"],
+                source="manual",
+            )
+
+            await self._send_reply(
+                f"✅ *Position ajoutée \\!*\n\n"
+                f"Mint : `{mint[:16]}\\.\\.\\.`\n"
+                f"Entry MC : `${data['market_cap']/1000:.0f}K`\n"
+                f"Entry Liq : `${data['liquidity']/1000:.0f}K`\n\n"
+                f"💰 Sell signals actifs\n"
+                f"📱 Tu recevras une alerte quand vendre"
+            )
+
+        except Exception as e:
+            await self._send_reply(f"❌ Erreur : {self._esc(str(e))}")
+
+    async def _cmd_close(self, symbol_or_mint: str):
+        """Commande /close <symbol> - Fermer position"""
+        if not symbol_or_mint:
+            await self._send_reply(
+                "❌ Format : `/close <symbol>` ou `/close <mint>`"
+            )
+            return
+
+        positions = self.sell_generator.get_positions()
+        target_mint = None
+
+        # Cherche par mint direct
+        if symbol_or_mint in positions:
+            target_mint = symbol_or_mint
+        else:
+            # Cherche par symbol
+            for mint, pos in positions.items():
+                if pos["symbol"].upper() == symbol_or_mint.upper():
+                    target_mint = mint
+                    break
+
+        if not target_mint:
+            await self._send_reply(
+                f"❌ Position `{self._esc(symbol_or_mint)}` non trouvée\\."
+            )
+            return
+
+        pos = positions[target_mint]
+        self.sell_generator.remove_position(target_mint)
+
+        await self._send_reply(
+            f"✅ *Position fermée*\n\n"
+            f"Token : *${self._esc(pos['symbol'])}*\n"
+            f"Max gain : `\\+{pos['max_gain']:.0f}%`\n"
+            f"TPs atteints : `{len(pos['tp_triggered'])}/4`"
+        )
+
     async def _cmd_pause(self):
         self.paused = True
         await self._send_reply(
@@ -1218,14 +1384,18 @@ class MemeSniper:
 
     async def _cmd_help(self):
         msg = (
-            "🤖 *MemeSniper v12\\.5 FINAL*\n"
+            "🤖 *MemeSniper v12\\.6 FINAL*\n"
             "━━━━━━━━━━━━━━\n\n"
             "📊 *Info:*\n"
             "/status \\- État du bot\n"
             "/stats \\- Performance\n"
             "/alertes \\- 10 dernières alertes\n"
             "/bullrun \\- Analyse des bulls\n"
-            "/backtest \\- Simuler réglages 🆕\n\n"
+            "/backtest \\- Simuler réglages\n\n"
+            "💰 *Positions \\(Sell Signals\\) 🆕*\n"
+            "/positions \\- Voir positions\n"
+            "/watch `<mint>` \\- Surveiller token\n"
+            "/close `<symbol>` \\- Fermer position\n\n"
             "🔍 *Analyse:*\n"
             "/check `<mint>` \\- Safety check\n\n"
             "🧠 *ML \\(apprentissage\\):*\n"
@@ -1276,7 +1446,6 @@ class MemeSniper:
         if self.dashboard:
             self.dashboard.add_event(f"Nouveau token: {symbol}")
 
-        # v12.3 : Attendre 45s pour que la liquidité soit ajoutée
         await asyncio.sleep(45)
         await self._analyze_and_alert(address, source="websocket")
 
@@ -1340,10 +1509,7 @@ class MemeSniper:
     # ═══════════════════════════════════════════════════
 
     async def handle_momentum_token(self, token_data: dict):
-        """
-        Callback appelé par MomentumDetector quand un token pump
-        Version v1.2 avec métriques qualité enrichies.
-        """
+        """Callback Momentum Detector"""
         try:
             if self.paused:
                 return
@@ -1420,34 +1586,16 @@ class MemeSniper:
 
             buttons = [
                 [
-                    {
-                        "text": "🚀 Photon",
-                        "url": f"https://photon-sol.tinyastro.io/en/lp/{mint}"
-                    },
-                    {
-                        "text": "📊 Chart",
-                        "url": token_data.get("dex_url") or f"https://dexscreener.com/solana/{mint}"
-                    },
+                    {"text": "🚀 Photon", "url": f"https://photon-sol.tinyastro.io/en/lp/{mint}"},
+                    {"text": "📊 Chart", "url": token_data.get("dex_url") or f"https://dexscreener.com/solana/{mint}"},
                 ],
                 [
-                    {
-                        "text": "🔍 Safety",
-                        "url": f"https://rugcheck.xyz/tokens/{mint}"
-                    },
-                    {
-                        "text": "💱 Jupiter",
-                        "url": f"https://jup.ag/swap/SOL-{mint}"
-                    },
+                    {"text": "🔍 Safety", "url": f"https://rugcheck.xyz/tokens/{mint}"},
+                    {"text": "💱 Jupiter", "url": f"https://jup.ag/swap/SOL-{mint}"},
                 ],
                 [
-                    {
-                        "text": "🔎 Solscan",
-                        "url": f"https://solscan.io/token/{mint}"
-                    },
-                    {
-                        "text": f"🐦 Twitter ${symbol}",
-                        "url": f"https://twitter.com/search?q=%24{symbol}"
-                    },
+                    {"text": "🔎 Solscan", "url": f"https://solscan.io/token/{mint}"},
+                    {"text": f"🐦 Twitter ${symbol}", "url": f"https://twitter.com/search?q=%24{symbol}"},
                 ],
             ]
 
@@ -1470,14 +1618,118 @@ class MemeSniper:
             logger.error(f"Handler momentum error : {e}", exc_info=True)
 
     # ═══════════════════════════════════════════════════
+    # HANDLER SELL SIGNAL v12.6
+    # ═══════════════════════════════════════════════════
+
+    async def handle_sell_signal(self, signal_data: dict):
+        """Callback SellSignalGenerator - Envoie alerte de vente"""
+        try:
+            symbol       = signal_data["symbol"]
+            mint         = signal_data["mint"]
+            pnl          = signal_data["pnl_pct"]
+            max_gain     = signal_data["max_gain"]
+            elapsed_min  = signal_data["elapsed_min"]
+            signals      = signal_data["signals"]
+            recommend    = signal_data["recommended_action"]
+            confidence   = signal_data["confidence"]
+            current_mc   = signal_data["current_mc"]
+
+            # Emoji selon PnL
+            if pnl >= 100:
+                pnl_emoji = "🚀"
+            elif pnl >= 50:
+                pnl_emoji = "💰"
+            elif pnl >= 0:
+                pnl_emoji = "📈"
+            elif pnl >= -20:
+                pnl_emoji = "📉"
+            else:
+                pnl_emoji = "🛑"
+
+            # Emoji urgence
+            has_sl = any(s["type"] == "SL" for s in signals)
+            has_tp = any(s["type"] == "TP" for s in signals)
+
+            if has_sl:
+                urgency_emoji = "🚨🚨🚨"
+                urgency_text = "URGENT"
+            elif has_tp:
+                urgency_emoji = "🎯"
+                urgency_text = "TAKE PROFIT"
+            else:
+                urgency_emoji = "⚠️"
+                urgency_text = "ATTENTION"
+
+            e_symbol = self._esc(symbol)
+            e_recommend = self._esc(recommend)
+
+            msg_lines = [
+                f"{urgency_emoji} *SELL SIGNAL* {urgency_emoji}",
+                f"━━━━━━━━━━━━━━━━━━",
+                f"",
+                f"💎 Token : *${e_symbol}*",
+                f"⏱ Ouvert : `{elapsed_min:.0f} min`",
+                f"",
+                f"{pnl_emoji} *PnL actuel : `{pnl:+.0f}%`*",
+                f"📊 Max atteint : `\\+{max_gain:.0f}%`",
+                f"💰 MC actuel : `${current_mc/1000:.0f}K`",
+                f"",
+                f"⚠️ *SIGNAUX \\({len(signals)}\\) :*",
+            ]
+
+            for sig in signals[:5]:  # Max 5 signaux
+                sig_msg = self._esc(sig['message'])
+                msg_lines.append(f"  • {sig_msg}")
+
+            msg_lines.extend([
+                f"",
+                f"💡 *RECOMMANDATION :*",
+                f"*{e_recommend}*",
+                f"",
+                f"🛡️ Confiance : `{confidence}/100`",
+                f"",
+                f"`{mint}`",
+            ])
+
+            msg = "\n".join(msg_lines)
+
+            buttons = [
+                [
+                    {"text": "💱 VENDRE Jupiter",
+                     "url": f"https://jup.ag/swap/{mint}-SOL"},
+                    {"text": "💱 VENDRE Photon",
+                     "url": f"https://photon-sol.tinyastro.io/en/lp/{mint}"},
+                ],
+                [
+                    {"text": "📊 Chart",
+                     "url": f"https://dexscreener.com/solana/{mint}"},
+                ],
+            ]
+
+            await self.alert_sender._send_telegram(msg, buttons=buttons)
+
+            self.sell_alerts_sent += 1
+
+            if self.dashboard:
+                self.dashboard.add_event(
+                    f"💰 SELL ${symbol} PnL {pnl:+.0f}% "
+                    f"({urgency_text})"
+                )
+
+            logger.info(
+                f"💰 SELL alerte envoyée : ${symbol} "
+                f"PnL {pnl:+.0f}% | Conf: {confidence}"
+            )
+
+        except Exception as e:
+            logger.error(f"Handler sell signal error : {e}", exc_info=True)
+
+    # ═══════════════════════════════════════════════════
     # ANALYSE + ALERTE — CŒUR DU BOT
     # ═══════════════════════════════════════════════════
 
     async def _analyze_and_alert(self, address: str, source: str):
-        """
-        Analyse un token et envoie une alerte Telegram
-        si le score dépasse le seuil requis.
-        """
+        """Analyse un token et envoie une alerte Telegram"""
 
         if self.paused:
             return
@@ -1676,6 +1928,24 @@ class MemeSniper:
                         decision["amount_eur"],
                     )
 
+                    # ═══ SELL SIGNAL v12.6 ═══
+                    # Ajouter automatiquement au sell generator
+                    try:
+                        sell_data = await self.sell_generator._fetch_token_data(address)
+                        if sell_data and sell_data.get("price", 0) > 0:
+                            self.sell_generator.add_position(
+                                mint=address,
+                                symbol=symbol,
+                                entry_price=sell_data["price"],
+                                entry_mc=sell_data["market_cap"],
+                                entry_liquidity=sell_data["liquidity"],
+                                entry_buy_ratio=sell_data["buy_ratio"],
+                                entry_volume_1h=sell_data["volume_1h"],
+                                source=source,
+                            )
+                    except Exception as e:
+                        logger.debug(f"Sell auto-add error : {e}")
+
                 logger.info(
                     f"[ALERT] ✅ {symbol} {score:.1f}/10 "
                     f"→ {decision['action']} | "
@@ -1773,6 +2043,13 @@ async def cleanup_all(bot: MemeSniper):
             logger.info("[CLEANUP] ✅ BullRunAnalyzer arrêté")
     except Exception as e:
         logger.error(f"[CLEANUP] bull_analyzer.stop() : {e}")
+
+    try:
+        if bot.sell_generator:
+            await bot.sell_generator.stop()
+            logger.info("[CLEANUP] ✅ SellSignalGenerator arrêté")
+    except Exception as e:
+        logger.error(f"[CLEANUP] sell_generator.stop() : {e}")
 
     try:
         if bot.dashboard:
