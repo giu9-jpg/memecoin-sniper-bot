@@ -1,22 +1,6 @@
 # main.py — v13.0 FINAL
 # Bot Sniper Memecoin Solana - ULTIMATE EDITION
 # ═══════════════════════════════════════════════
-# ✅ TokenSafety v1.2
-# ✅ Bull Run Analyzer v1.0
-# ✅ Backtester v1 + v2
-# ✅ Sell Signal Generator
-# ✅ Chart Screenshot
-# ✅ Wallet Discovery
-# ✅ Auto-Optimizer
-# ✅ Portfolio Tracker
-# ✅ Dashboard v2 (graphiques)
-# ✅ Dump Detector
-# ✅ Whale Sell Tracker
-# ✅ CSV Exporter (rapports quotidiens)
-# ✅ Watchlist personnalisée
-# ✅ Admin Security
-# ✅ Social Score Twitter
-# ❌ PAS de trading automatique
 
 import asyncio
 import gc
@@ -74,10 +58,6 @@ from config.alpha_accounts       import (
 )
 
 
-# ═══════════════════════════════════════════════════════
-# CONSTANTES
-# ═══════════════════════════════════════════════════════
-
 POLLING_INTERVAL     = 30
 HEALTH_CHECK_EVERY   = 300
 POSITION_CHECK_EVERY = 60
@@ -85,23 +65,17 @@ MARKET_CHECK_EVERY   = 180
 ALPHA_CHECK_EVERY    = 300
 COPY_TRADING_EVERY   = 180
 TWITTER_CHECK_EVERY  = 300
-STATS_EVERY          = 3600
+STATS_EVERY          = 86400
 MEMORY_CLEANUP_EVERY = 1800
 COMMAND_POLL_EVERY   = 2
 MIN_SCORE            = 7.5
 
 
-# ═══════════════════════════════════════════════════════
-# BOT PRINCIPAL
-# ═══════════════════════════════════════════════════════
-
 class MemeSniper:
 
     def __init__(self):
-
         self.config = load_config()
 
-        # ═══ MODULES CORE ═══
         self.market_context  = MarketContext()
         self.alpha_tracker   = AlphaTracker()
         self.perf_tracker    = PerformanceTracker()
@@ -111,19 +85,16 @@ class MemeSniper:
         self.token_safety    = TokenSafety(self.config.solana_rpc_url)
         self.ml_scorer       = MLScorer()
 
-        # ═══ MODULES v12 ═══
         self.bull_analyzer     = BullRunAnalyzer()
         self.backtester        = Backtester(self.bull_analyzer)
         self.backtester_v2     = BacktesterV2(self.bull_analyzer)
         self.chart_screenshot  = ChartScreenshot()
         self.wallet_discovery  = WalletDiscovery(self.bull_analyzer)
 
-        # ═══ MODULES v13 ═══
         self.portfolio_tracker = PortfolioTracker()
         self.admin_security    = AdminSecurity()
         self.social_score      = SocialScore()
 
-        # Callbacks
         self.sell_generator = SellSignalGenerator(
             alert_callback=self.handle_sell_signal
         )
@@ -155,14 +126,12 @@ class MemeSniper:
             market_context=self.market_context
         )
 
-        # Auto-Optimizer nécessite alert_sender
         self.auto_optimizer = AutoOptimizer(
             ml_scorer=self.ml_scorer,
             bull_analyzer=self.bull_analyzer,
             alert_sender=self.alert_sender,
         )
 
-        # CSV Exporter nécessite plusieurs modules
         self.csv_exporter = CSVExporter(
             alert_sender=self.alert_sender,
             perf_tracker=self.perf_tracker,
@@ -189,7 +158,6 @@ class MemeSniper:
             token_callback=self.handle_new_token_ws
         )
 
-        # Dashboard v2 avec graphiques
         self.dashboard = None
         if self.config.dashboard.enabled:
             self.dashboard = DashboardServerV2(
@@ -199,12 +167,9 @@ class MemeSniper:
             )
 
         self.http_session = None
-
-        # État interne
         self.alerted_tokens = {}
         self.processing_tokens = set()
         self.paused = False
-
         self.ws_active        = False
         self.start_time       = time.time()
         self.tokens_analyzed  = 0
@@ -213,19 +178,11 @@ class MemeSniper:
         self.twitter_signals  = 0
         self.raydium_tokens   = 0
         self.max_alerted      = 500
-
         self.telegram_offset = 0
 
-    # ═══════════════════════════════════════════════════
-    # DÉMARRAGE
-    # ═══════════════════════════════════════════════════
-
     async def run(self):
-        """Point d'entrée principal du bot."""
-
         self.http_session = aiohttp.ClientSession()
 
-        # Liste des modules à démarrer avec leur callback de log
         modules_to_start = [
             ("TokenSafety v1.2",       self.token_safety),
             ("RadyiumMonitor",         self.raydium_monitor),
@@ -249,9 +206,8 @@ class MemeSniper:
                 await module.start()
                 logger.info(f"✅ {name} : ACTIF")
             except Exception as e:
-                logger.error(f"❌ Impossible de démarrer {name} : {e}")
+                logger.error(f"❌ {name} : {e}")
 
-        # Infos startup
         total_wallets = len(get_all_wallets())
         t1  = len(ALPHA_WALLETS.get("TIER1",   []))
         t15 = len(ALPHA_WALLETS.get("TIER1_5", []))
@@ -266,10 +222,10 @@ class MemeSniper:
         opt_config = self.auto_optimizer.get_current_config()
 
         logger.info("🚀 MemeSniper v13.0 FINAL démarré !")
-        logger.info(f"   Score minimum : {opt_config.get('min_score', MIN_SCORE)}/10 (auto)")
+        logger.info(f"   Score min : {opt_config.get('min_score', MIN_SCORE)}/10")
         logger.info(f"   Alpha Wallets : {total_wallets} (T1:{t1} T1.5:{t15} T2:{t2})")
-        logger.info(f"   Twitter accounts : {twitter_count} (T1:{t1_tw} T2:{t2_tw} T3:{t3_tw})")
-        logger.info(f"   ML : {ml_stats.get('trades', 0)} trades | ready: {ml_stats.get('ready', False)}")
+        logger.info(f"   Twitter : {twitter_count} (T1:{t1_tw} T2:{t2_tw} T3:{t3_tw})")
+        logger.info(f"   ML : {ml_stats.get('trades', 0)} trades")
 
         if self.dashboard:
             logger.info(
@@ -279,36 +235,31 @@ class MemeSniper:
 
         logger.info(f"   Trading Auto : DÉSACTIVÉ")
 
-        # Market context
         try:
             await self.market_context.fetch_market_data()
             sig = self.market_context.get_market_signal()
             logger.info(
                 f"   📊 Marché : {sig['regime']} | "
                 f"BTC {sig['btc_change_24h']:+.1f}% | "
-                f"SOL {sig['sol_change_24h']:+.1f}% | "
                 f"FG {sig['fear_greed']}"
             )
         except Exception as e:
-            logger.warning(f"   ⚠️ Market context : {e}")
+            logger.warning(f"   ⚠️ Market : {e}")
 
-        # Historique perf
         try:
             stats = self.perf_tracker.get_stats()
             logger.info(
                 f"   📈 Historique : {stats['total_alerts']} alertes | "
-                f"Win rate : {stats['win_rate']}%"
+                f"WR : {stats['win_rate']}%"
             )
         except Exception:
             pass
 
-        # Startup Telegram
         try:
             await self.alert_sender.send_startup_message()
         except Exception as e:
             logger.warning(f"   ⚠️ Startup Telegram : {e}")
 
-        # Init offset Telegram
         try:
             await self._init_telegram_offset()
         except Exception as e:
@@ -337,10 +288,6 @@ class MemeSniper:
 
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    # ═══════════════════════════════════════════════════
-    # BOUCLES PRINCIPALES
-    # ═══════════════════════════════════════════════════
-
     async def _run_websocket(self):
         try:
             self.ws_active = True
@@ -363,7 +310,7 @@ class MemeSniper:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"[POLLING] Erreur : {e}")
+                logger.error(f"[POLLING] {e}")
             await asyncio.sleep(POLLING_INTERVAL)
 
     async def _run_raydium_monitor(self):
@@ -376,7 +323,7 @@ class MemeSniper:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.error(f"[RAYDIUM] Erreur : {e}")
+            logger.error(f"[RAYDIUM] {e}")
 
     async def _run_market_updater(self):
         logger.info(f"[MARKET] Actif ({MARKET_CHECK_EVERY}s)")
@@ -393,7 +340,7 @@ class MemeSniper:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"[MARKET] Erreur : {e}")
+                logger.error(f"[MARKET] {e}")
 
     async def _run_alpha_updater(self):
         logger.info(f"[ALPHA] Actif ({ALPHA_CHECK_EVERY}s)")
@@ -401,13 +348,11 @@ class MemeSniper:
         while True:
             try:
                 await self.alpha_tracker.check_alpha_wallets()
-                logger.info(
-                    f"[ALPHA] {len(self.alpha_tracker.token_buyers)} token(s)"
-                )
+                logger.info(f"[ALPHA] {len(self.alpha_tracker.token_buyers)} token(s)")
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"[ALPHA] Erreur : {e}")
+                logger.error(f"[ALPHA] {e}")
             await asyncio.sleep(ALPHA_CHECK_EVERY)
 
     async def _run_alpha_copy_trading(self):
@@ -418,25 +363,17 @@ class MemeSniper:
                 async def on_alpha_buy(token, wallet, tier):
                     self.copy_trades += 1
                     tier_str = tier or "UNKNOWN"
-                    logger.info(
-                        f"[COPY] {tier_str} {wallet[:8]}... → {token[:8]}..."
-                    )
+                    logger.info(f"[COPY] {tier_str} {wallet[:8]}... → {token[:8]}...")
                     if self.dashboard:
-                        self.dashboard.add_event(
-                            f"Copy: {tier_str} {wallet[:8]}..."
-                        )
+                        self.dashboard.add_event(f"Copy: {tier_str} {wallet[:8]}...")
                     if token not in self.alerted_tokens:
-                        await self._analyze_and_alert(
-                            token, source=f"copy_{tier_str}"
-                        )
+                        await self._analyze_and_alert(token, source=f"copy_{tier_str}")
 
-                await self.alpha_tracker.check_new_alpha_buys(
-                    callback=on_alpha_buy
-                )
+                await self.alpha_tracker.check_new_alpha_buys(callback=on_alpha_buy)
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"[COPY] Erreur : {e}")
+                logger.error(f"[COPY] {e}")
             await asyncio.sleep(COPY_TRADING_EVERY)
 
     async def _run_twitter_tracker(self):
@@ -449,26 +386,18 @@ class MemeSniper:
                     tier = signal.get("tier", "UNKNOWN")
                     username = signal.get("username", "?")
                     addrs = signal.get("addresses", [])
-                    logger.info(
-                        f"[TWITTER] {tier} @{username} → CA:{len(addrs)}"
-                    )
+                    logger.info(f"[TWITTER] {tier} @{username} → CA:{len(addrs)}")
                     if self.dashboard:
-                        self.dashboard.add_event(
-                            f"Twitter {tier}: @{username}"
-                        )
+                        self.dashboard.add_event(f"Twitter {tier}: @{username}")
                     for address in addrs:
                         if address not in self.alerted_tokens:
-                            await self._analyze_and_alert(
-                                address, source=f"twitter_{tier}"
-                            )
+                            await self._analyze_and_alert(address, source=f"twitter_{tier}")
 
-                await self.twitter_tracker.check_all_accounts(
-                    callback=on_twitter_signal
-                )
+                await self.twitter_tracker.check_all_accounts(callback=on_twitter_signal)
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"[TWITTER] Erreur : {e}")
+                logger.error(f"[TWITTER] {e}")
             await asyncio.sleep(TWITTER_CHECK_EVERY)
 
     async def _run_whale_tracker(self):
@@ -482,18 +411,14 @@ class MemeSniper:
                         continue
                     label = signal.get("whale_label", "?")
                     amt = signal.get("amount_usd", 0)
-                    logger.info(
-                        f"[WHALE] {label} → {addr[:8]}... (${amt:,.0f})"
-                    )
+                    logger.info(f"[WHALE] {label} → {addr[:8]}... (${amt:,.0f})")
                     if self.dashboard:
-                        self.dashboard.add_event(
-                            f"Whale: {label} ${amt:,.0f}"
-                        )
+                        self.dashboard.add_event(f"Whale: {label} ${amt:,.0f}")
                     await self._analyze_and_alert(addr, source="whale")
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"[WHALE] Erreur : {e}")
+                logger.error(f"[WHALE] {e}")
             await asyncio.sleep(60)
 
     async def _run_position_tracker(self):
@@ -506,23 +431,49 @@ class MemeSniper:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"[POSITIONS] Erreur : {e}")
+                logger.error(f"[POSITIONS] {e}")
             await asyncio.sleep(POSITION_CHECK_EVERY)
 
     async def _run_stats_reporter(self):
-        logger.info(f"[STATS] Actif (toutes les heures)")
+        logger.info("[STATS] Actif 24h silencieux si aucune activite")
         await asyncio.sleep(STATS_EVERY)
+
+        last_alerts = 0
+        last_trades = 0
+
         while True:
             try:
-                stats_msg = self.perf_tracker.get_summary_message()
-                await self.alert_sender._send_telegram(
-                    stats_msg, buttons=None
-                )
-                logger.info("[STATS] Rapport horaire envoyé")
+                stats = self.perf_tracker.get_stats()
+                current_alerts = stats.get("total_alerts", 0)
+                current_trades = stats.get("wins", 0) + stats.get("losses", 0)
+
+                delta_alerts = current_alerts - last_alerts
+                delta_trades = current_trades - last_trades
+
+                has_activity = (delta_alerts > 0) or (delta_trades > 0)
+
+                if has_activity:
+                    stats_msg = self.perf_tracker.get_summary_message()
+                    delta_header = (
+                        f"📊 *ACTIVITE 24H*\n"
+                        f"━━━━━━━━━━━━━━\n"
+                        f"🎯 Nouvelles alertes : `{delta_alerts}`\n"
+                        f"📋 Nouveaux trades : `{delta_trades}`\n\n"
+                    )
+                    full_msg = delta_header + stats_msg
+                    await self.alert_sender._send_telegram(full_msg, buttons=None)
+                    logger.info(f"[STATS] Rapport 24h envoye (+{delta_alerts} alertes)")
+                else:
+                    logger.info("[STATS] Rapport ignore aucune activite")
+
+                last_alerts = current_alerts
+                last_trades = current_trades
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"[STATS] Erreur : {e}")
+                logger.error(f"[STATS] {e}")
+
             await asyncio.sleep(STATS_EVERY)
 
     async def _run_memory_cleanup(self):
@@ -552,7 +503,7 @@ class MemeSniper:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"[MEMORY] Erreur : {e}")
+                logger.error(f"[MEMORY] {e}")
             await asyncio.sleep(MEMORY_CLEANUP_EVERY)
 
     async def _run_health_check(self):
@@ -563,11 +514,6 @@ class MemeSniper:
                 uptime = int((time.time() - self.start_time) / 60)
                 ws = "✅" if self.ws_active else "❌"
                 pause = "⏸ PAUSE" if self.paused else "▶️ ACTIF"
-
-                n_pos = len([
-                    p for p in self.position_tracker.positions.values()
-                    if not p.get("closed")
-                ])
 
                 try:
                     regime = self.market_context.get_market_signal()["regime"]
@@ -599,12 +545,8 @@ class MemeSniper:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"[HEALTH] Erreur : {e}")
+                logger.error(f"[HEALTH] {e}")
             await asyncio.sleep(HEALTH_CHECK_EVERY)
-
-    # ═══════════════════════════════════════════════════
-    # COMMANDES TELEGRAM
-    # ═══════════════════════════════════════════════════
 
     async def _init_telegram_offset(self):
         token = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -651,7 +593,6 @@ class MemeSniper:
                             text = msg.get("text", "").strip()
                             chat = str(msg.get("chat", {}).get("id", ""))
 
-                            # Sécurité : vérifie autorisation
                             if not self.admin_security.is_authorized(chat):
                                 continue
 
@@ -660,7 +601,7 @@ class MemeSniper:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.debug(f"[CMD] Error: {e}")
+                logger.debug(f"[CMD] {e}")
                 await asyncio.sleep(5)
             await asyncio.sleep(COMMAND_POLL_EVERY)
 
@@ -668,25 +609,21 @@ class MemeSniper:
         text_lower = text.lower().strip()
         logger.info(f"[CMD] {text}")
 
-        # Rate limiting
         if user_id:
             rl = self.admin_security.check_rate_limit(user_id, text_lower)
             if not rl["allowed"]:
                 await self._send_reply(f"🔒 {rl['reason']}")
                 return
 
-        # Confirmation pour commandes sensibles
         if user_id and self.admin_security.needs_confirmation(text_lower):
             conf = self.admin_security.request_confirmation(user_id, text_lower)
             if not conf["confirmed"]:
                 await self._send_reply(conf["message"])
                 return
 
-        # Enregistre
         if user_id:
             self.admin_security.register_command(user_id, text_lower)
 
-        # Commandes avec arguments
         cmd_args = {
             "/check ":         self._cmd_check,
             "/win ":           self._cmd_win,
@@ -709,7 +646,6 @@ class MemeSniper:
                 await handler(text[len(prefix):].strip())
                 return
 
-        # Commandes simples
         routes = {
             "/status":       self._cmd_status,
             "/stats":        self._cmd_stats,
@@ -740,17 +676,13 @@ class MemeSniper:
             try:
                 await handler()
             except Exception as e:
-                logger.error(f"[CMD] Erreur {text}: {e}")
-                await self._send_reply(f"❌ Erreur: {e}")
+                logger.error(f"[CMD] {text}: {e}")
+                await self._send_reply(f"❌ {e}")
         else:
             await self._send_reply(
                 f"❓ Commande inconnue: `{self._esc(text)}`\n"
                 f"Tape /help"
             )
-
-    # ═══════════════════════════════════════════════════
-    # COMMANDES - INFO
-    # ═══════════════════════════════════════════════════
 
     async def _cmd_status(self):
         uptime = int(time.time() - self.start_time)
@@ -779,15 +711,15 @@ class MemeSniper:
             f"⏱ Uptime: `{h}h {m}m {s}s`\n"
             f"🔄 État: *{self._esc(pause_str)}*\n"
             f"📡 WebSocket: {ws_str}\n\n"
-            f"🎯 *Modules actifs :*\n"
-            f"🛡️ Safety v1\\.2 | 🔥 Momentum v1\\.2\n"
-            f"🎯 Bulls: `{n_bulls}` | 💰 Sells: `{sell['positions_open']}`\n"
-            f"📸 Charts | 🔍 Wallets: `{wd['wallets_tracked']}`\n"
+            f"🎯 *Modules :*\n"
+            f"🛡️ Safety v1\\.2 \\| 🔥 Momentum v1\\.2\n"
+            f"🎯 Bulls: `{n_bulls}` \\| 💰 Sells: `{sell['positions_open']}`\n"
+            f"📸 Charts \\| 🔍 Wallets: `{wd['wallets_tracked']}`\n"
             f"🎯 Optim: `{opt['total_optimizations']}`\n"
             f"💼 Portfolio: `{port['open_positions']}` pos\n"
-            f"📉 Dump alerts: `{self.dump_alerts_sent}`\n"
-            f"🐋 Whale sells: `{self.whale_sell_alerts_sent}`\n"
-            f"🔔 Watchlist: `{wl['active_watches']}` actives\n"
+            f"📉 Dump: `{self.dump_alerts_sent}`\n"
+            f"🐋 WSell: `{self.whale_sell_alerts_sent}`\n"
+            f"🔔 Watch: `{wl['active_watches']}`\n"
             f"🧠 ML: `{ml.get('trades', 0)}` trades\n\n"
             f"📊 *Activité :*\n"
             f"  Analysés: `{self.tokens_analyzed}`\n"
@@ -797,7 +729,7 @@ class MemeSniper:
             f"  Twitter: `{self.twitter_signals}`\n"
             f"  Raydium: `{self.raydium_tokens}`\n"
             f"  Momentum: `{self.momentum_alerts}`\n\n"
-            f"🌍 Marché: *{self._esc(regime)}* \\(BTC `{btc:+.1f}%`\\)\n"
+            f"🌍 Marché: *{self._esc(regime)}* \\(BTC `{btc:+.1f}%`\\)"
         )
         await self._send_reply(msg)
 
@@ -861,10 +793,6 @@ class MemeSniper:
         except Exception as e:
             await self._send_reply(f"❌ {self._esc(str(e))}")
 
-    # ═══════════════════════════════════════════════════
-    # COMMANDES - ML
-    # ═══════════════════════════════════════════════════
-
     async def _cmd_win(self, args: str):
         parts = args.split()
         name = parts[0] if parts else "?"
@@ -911,14 +839,10 @@ class MemeSniper:
                 f"Wins: `{stats['wins']}` ✅\n"
                 f"Losses: `{stats['losses']}` ❌\n"
                 f"WR: `{stats['win_rate']:.1f}%`\n"
-                f"PnL moyen: `{stats['avg_pnl']:+.1f}%`\n"
+                f"PnL moy: `{stats['avg_pnl']:+.1f}%`\n"
                 f"Features: `{stats['features']}`"
             )
         await self._send_reply(msg)
-
-    # ═══════════════════════════════════════════════════
-    # COMMANDES - BULL ANALYZER & BACKTEST
-    # ═══════════════════════════════════════════════════
 
     async def _cmd_bullrun(self):
         stats = self.bull_analyzer.get_stats(days=7)
@@ -982,8 +906,7 @@ class MemeSniper:
 
         if results[0].get("total_bulls", 0) == 0:
             await self._send_reply(
-                f"📊 *BACKTEST*\n\n"
-                f"{self._esc(results[0].get('message', ''))}"
+                f"📊 *BACKTEST*\n\n{self._esc(results[0].get('message', ''))}"
             )
             return
 
@@ -1006,7 +929,6 @@ class MemeSniper:
         await self._send_reply("\n".join(lines))
 
     async def _cmd_strategy(self, args: str):
-        """Simuler une stratégie"""
         parts = args.split()
         strat_name = parts[0].upper() if parts else "BALANCED"
         try:
@@ -1015,14 +937,12 @@ class MemeSniper:
             days = 30
 
         result = self.backtester_v2.simulate_strategy(
-            strategy_name=strat_name,
-            days=days,
-            entry_amount=10,
+            strategy_name=strat_name, days=days, entry_amount=10,
         )
 
         if result.get("total_trades", 0) == 0:
             await self._send_reply(
-                f"📊 *Stratégie {self._esc(strat_name)}*\n\n"
+                f"📊 *{self._esc(strat_name)}*\n\n"
                 f"{self._esc(result.get('message', 'Pas de données'))}"
             )
             return
@@ -1033,30 +953,24 @@ class MemeSniper:
             f"_{self._esc(result['strategy_desc'])}_\n\n"
             f"🎯 Trades: `{result['total_trades']}`\n"
             f"✅ Wins: `{result['wins']}` \\| ❌ Losses: `{result['losses']}`\n"
-            f"📈 Win rate: `{result['win_rate']:.1f}%`\n\n"
+            f"📈 WR: `{result['win_rate']:.1f}%`\n\n"
             f"💰 *Résultats :*\n"
             f"  Investi: `{result['total_invested']:.0f}€`\n"
             f"  PnL: `{result['total_pnl_eur']:+.0f}€`\n"
-            f"  ROI: `{result['roi_pct']:+.1f}%`\n"
-            f"  Avg PnL: `{result['avg_pnl_pct']:+.1f}%`\n\n"
-            f"🎯 *TPs :* TP1:{result['tp_hits']['TP1']} \\| "
+            f"  ROI: `{result['roi_pct']:+.1f}%`\n\n"
+            f"🎯 TPs: TP1:{result['tp_hits']['TP1']} \\| "
             f"TP2:{result['tp_hits']['TP2']} \\| "
             f"TP3:{result['tp_hits']['TP3']} \\| "
             f"TP4:{result['tp_hits']['TP4']}\n"
-            f"🛑 SL: `{result['sl_hits']}`\n\n"
-            f"🏆 Best: ${self._esc(result['best_trade']['symbol'])} `{result['best_trade']['pnl_pct']:+.0f}%`\n"
-            f"💀 Worst: ${self._esc(result['worst_trade']['symbol'])} `{result['worst_trade']['pnl_pct']:+.0f}%`"
+            f"🛑 SL: `{result['sl_hits']}`"
         )
         await self._send_reply(msg)
 
     async def _cmd_compare_strategies(self):
-        """Compare toutes les stratégies"""
         result = self.backtester_v2.compare_strategies(days=30)
 
         if "error" in result:
-            await self._send_reply(
-                f"📊 *Comparaison*\n\n{self._esc(result['error'])}"
-            )
+            await self._send_reply(f"📊 {self._esc(result['error'])}")
             return
 
         lines = [
@@ -1081,7 +995,6 @@ class MemeSniper:
         await self._send_reply("\n".join(lines))
 
     async def _cmd_list_strategies(self):
-        """Liste les stratégies disponibles"""
         strats = self.backtester_v2.get_available_strategies()
 
         lines = [
@@ -1097,21 +1010,16 @@ class MemeSniper:
             lines.append("")
 
         lines.append(f"💡 `/strategy NAME [days]`")
-        lines.append(f"💡 `/compare` pour comparer toutes")
+        lines.append(f"💡 `/compare` pour comparer")
 
         await self._send_reply("\n".join(lines))
 
-    # ═══════════════════════════════════════════════════
-    # COMMANDES - PORTFOLIO
-    # ═══════════════════════════════════════════════════
-
     async def _cmd_buy(self, args: str):
-        """Enregistre un achat manuel"""
         parts = args.split()
         if len(parts) < 2:
             await self._send_reply(
                 "❌ `/buy SYMBOL AMOUNT [MINT]`\n"
-                "Ex: `/buy PEPE 50` ou `/buy PEPE 50 7xKXtg...`"
+                "Ex: `/buy PEPE 50`"
             )
             return
 
@@ -1131,19 +1039,15 @@ class MemeSniper:
         if result["success"]:
             pos = result["position"]
             await self._send_reply(
-                f"✅ *ACHAT enregistré*\n\n"
+                f"✅ *ACHAT*\n\n"
                 f"Token: `${self._esc(symbol)}`\n"
                 f"Montant: `{amount:.2f}€`\n"
-                f"Prix: `${pos.get('entry_price', 0):.8f}`\n"
                 f"MC: `${pos.get('entry_mc', 0)/1000:.0f}K`"
             )
         else:
-            await self._send_reply(
-                f"❌ {self._esc(result.get('error', 'Erreur'))}"
-            )
+            await self._send_reply(f"❌ {self._esc(result.get('error', 'Erreur'))}")
 
     async def _cmd_sell(self, args: str):
-        """Enregistre une vente manuelle"""
         parts = args.split()
         if not parts:
             await self._send_reply("❌ `/sell SYMBOL [PNL_PCT]`")
@@ -1157,44 +1061,36 @@ class MemeSniper:
         except ValueError:
             pass
 
-        result = await self.portfolio_tracker.add_sell(
-            symbol=symbol, pnl_pct=pnl
-        )
+        result = await self.portfolio_tracker.add_sell(symbol=symbol, pnl_pct=pnl)
 
         if result["success"]:
             trade = result["trade"]
             pnl_emoji = "🚀" if trade["pnl_pct"] > 0 else "💀"
             await self._send_reply(
-                f"{pnl_emoji} *VENTE enregistrée*\n\n"
+                f"{pnl_emoji} *VENTE*\n\n"
                 f"Token: `${self._esc(symbol)}`\n"
                 f"PnL: `{trade['pnl_pct']:+.1f}%`\n"
-                f"Gain/Perte: `{trade['pnl_eur']:+.2f}€`\n"
-                f"Final: `{trade['final_eur']:.2f}€`\n"
+                f"Gain: `{trade['pnl_eur']:+.2f}€`\n"
                 f"Durée: `{trade['duration_min']:.0f}min`"
             )
 
-            # Auto-record dans le ML
             self.ml_scorer.record_result(
                 token_name=symbol,
                 is_win=(trade['pnl_pct'] > 0),
                 pnl_pct=trade['pnl_pct'],
             )
         else:
-            await self._send_reply(
-                f"❌ {self._esc(result.get('error', 'Erreur'))}"
-            )
+            await self._send_reply(f"❌ {self._esc(result.get('error', 'Erreur'))}")
 
     async def _cmd_portfolio(self):
-        """Affiche le portefeuille"""
         summary = self.portfolio_tracker.get_portfolio_summary()
         positions = self.portfolio_tracker.get_all_positions()
 
         if summary["open_positions"] == 0 and summary["total_trades"] == 0:
             await self._send_reply(
                 f"💼 *Portfolio vide*\n\n"
-                f"💡 Enregistre tes trades:\n"
-                f"`/buy SYMBOL AMOUNT`\n"
-                f"`/sell SYMBOL [PNL]`"
+                f"💡 `/buy SYMBOL AMOUNT`\n"
+                f"💡 `/sell SYMBOL [PNL]`"
             )
             return
 
@@ -1202,10 +1098,9 @@ class MemeSniper:
             f"💼 *PORTFOLIO*",
             f"━━━━━━━━━━━━━━",
             f"",
-            f"📊 Positions ouvertes: `{summary['open_positions']}`",
-            f"💰 Investi total: `{summary['total_invested']:.0f}€`",
+            f"📊 Positions: `{summary['open_positions']}`",
+            f"💰 Investi: `{summary['total_invested']:.0f}€`",
             f"📈 PnL réalisé: `{summary['total_pnl']:+.0f}€`",
-            f"📊 Valeur ouverte: `{summary['total_open_value']:.0f}€`",
             f"📈 PnL non\\-réalisé: `{summary['total_open_pnl_eur']:+.0f}€`",
             f"🎯 Trades totaux: `{summary['total_trades']}`",
         ]
@@ -1218,14 +1113,11 @@ class MemeSniper:
                 amt = pos['amount_eur']
                 pnl = pos.get('current_pnl', 0)
                 emoji = "🚀" if pnl > 0 else "📉" if pnl < 0 else "➡️"
-                lines.append(
-                    f"  {emoji} `${sym}`: {amt:.0f}€ \\({pnl:+.0f}%\\)"
-                )
+                lines.append(f"  {emoji} `${sym}`: {amt:.0f}€ \\({pnl:+.0f}%\\)")
 
         await self._send_reply("\n".join(lines))
 
     async def _cmd_pnl(self):
-        """PnL par période"""
         pnl = self.portfolio_tracker.get_pnl_by_period()
 
         def fmt(v):
@@ -1235,18 +1127,17 @@ class MemeSniper:
             f"📊 *PnL PAR PÉRIODE*\n"
             f"━━━━━━━━━━━━━━\n\n"
             f"📅 *Aujourd'hui :* {fmt(pnl['pnl_day'])}\n"
-            f"   Wins: `{pnl['wins_day']}` \\| Losses: `{pnl['losses_day']}`\n\n"
+            f"   W/L: `{pnl['wins_day']}`/`{pnl['losses_day']}`\n\n"
             f"📅 *7 jours :* {fmt(pnl['pnl_week'])}\n"
-            f"   Wins: `{pnl['wins_week']}` \\| Losses: `{pnl['losses_week']}`\n\n"
+            f"   W/L: `{pnl['wins_week']}`/`{pnl['losses_week']}`\n\n"
             f"📅 *30 jours :* {fmt(pnl['pnl_month'])}\n\n"
             f"🌍 *All\\-time :* {fmt(pnl['pnl_all'])}\n"
-            f"   Wins: `{pnl['wins_all']}` \\| Losses: `{pnl['losses_all']}`\n"
+            f"   W/L: `{pnl['wins_all']}`/`{pnl['losses_all']}`\n"
             f"   WR: `{pnl['win_rate_all']:.1f}%`"
         )
         await self._send_reply(msg)
 
     async def _cmd_trades(self):
-        """Historique des trades"""
         trades = self.portfolio_tracker.get_all_trades(limit=15)
 
         if not trades:
@@ -1264,18 +1155,11 @@ class MemeSniper:
             pnl_pct = t['pnl_pct']
             pnl_eur = t['pnl_eur']
             emoji = "🚀" if pnl_pct > 0 else "💀"
-            lines.append(
-                f"{emoji} `${sym}` `{pnl_pct:+.0f}%` \\({pnl_eur:+.2f}€\\)"
-            )
+            lines.append(f"{emoji} `${sym}` `{pnl_pct:+.0f}%` \\({pnl_eur:+.2f}€\\)")
 
         await self._send_reply("\n".join(lines))
 
-    # ═══════════════════════════════════════════════════
-    # COMMANDES - WATCHLIST
-    # ═══════════════════════════════════════════════════
-
     async def _cmd_watchmc(self, args: str):
-        """Watch MC target : /watchmc PEPE 500K"""
         parts = args.split()
         if len(parts) < 2:
             await self._send_reply("❌ `/watchmc SYMBOL TARGET`\nEx: `/watchmc PEPE 500K`")
@@ -1284,7 +1168,6 @@ class MemeSniper:
         symbol = parts[0]
         target_str = parts[1].upper()
 
-        # Parse 500K, 1M, etc.
         try:
             if target_str.endswith("K"):
                 target = float(target_str[:-1]) * 1000
@@ -1297,27 +1180,21 @@ class MemeSniper:
             return
 
         result = await self.watchlist.add_watch(
-            symbol_or_mint=symbol,
-            alert_type="MC_TARGET",
-            target=target,
+            symbol_or_mint=symbol, alert_type="MC_TARGET", target=target,
         )
 
         if result["success"]:
             await self._send_reply(
-                f"🔔 *Watch ajoutée*\n\n"
-                f"Token: `${self._esc(symbol)}`\n"
-                f"Type: MC Target\n"
-                f"Cible: `${target/1000:.0f}K`\n"
-                f"MC actuel: `${result.get('current_mc', 0)/1000:.0f}K`"
+                f"🔔 *Watch MC ajoutée*\n"
+                f"`${self._esc(symbol)}` → `${target/1000:.0f}K`"
             )
         else:
             await self._send_reply(f"❌ {self._esc(result['message'])}")
 
     async def _cmd_watchpump(self, args: str):
-        """Watch pump : /watchpump PEPE 100"""
         parts = args.split()
         if len(parts) < 2:
-            await self._send_reply("❌ `/watchpump SYMBOL PCT`\nEx: `/watchpump PEPE 100`")
+            await self._send_reply("❌ `/watchpump SYMBOL PCT`")
             return
 
         symbol = parts[0]
@@ -1328,25 +1205,21 @@ class MemeSniper:
             return
 
         result = await self.watchlist.add_watch(
-            symbol_or_mint=symbol,
-            alert_type="PUMP",
-            target=pct,
+            symbol_or_mint=symbol, alert_type="PUMP", target=pct,
         )
 
         if result["success"]:
             await self._send_reply(
-                f"🔔 *Watch pump*\n\n"
-                f"Token: `${self._esc(symbol)}`\n"
-                f"Alerte si: `\\+{pct:.0f}%`"
+                f"🔔 *Watch pump*\n"
+                f"`${self._esc(symbol)}` → `\\+{pct:.0f}%`"
             )
         else:
             await self._send_reply(f"❌ {self._esc(result['message'])}")
 
     async def _cmd_watchdrop(self, args: str):
-        """Watch drop : /watchdrop PEPE 30"""
         parts = args.split()
         if len(parts) < 2:
-            await self._send_reply("❌ `/watchdrop SYMBOL PCT`\nEx: `/watchdrop PEPE 30`")
+            await self._send_reply("❌ `/watchdrop SYMBOL PCT`")
             return
 
         symbol = parts[0]
@@ -1357,22 +1230,18 @@ class MemeSniper:
             return
 
         result = await self.watchlist.add_watch(
-            symbol_or_mint=symbol,
-            alert_type="DROP",
-            target=pct,
+            symbol_or_mint=symbol, alert_type="DROP", target=pct,
         )
 
         if result["success"]:
             await self._send_reply(
-                f"🔔 *Watch drop*\n\n"
-                f"Token: `${self._esc(symbol)}`\n"
-                f"Alerte si: `\\-{pct:.0f}%`"
+                f"🔔 *Watch drop*\n"
+                f"`${self._esc(symbol)}` → `\\-{pct:.0f}%`"
             )
         else:
             await self._send_reply(f"❌ {self._esc(result['message'])}")
 
     async def _cmd_unwatch(self, args: str):
-        """Retire un watch"""
         parts = args.split()
         if not parts:
             await self._send_reply("❌ `/unwatch SYMBOL [TYPE]`")
@@ -1384,24 +1253,20 @@ class MemeSniper:
         result = self.watchlist.remove_watch(symbol, alert_type)
 
         if result["success"]:
-            await self._send_reply(
-                f"✅ {result['removed']} watch\\(s\\) supprimée\\(s\\)"
-            )
+            await self._send_reply(f"✅ {result['removed']} watch\\(s\\) supprimée\\(s\\)")
         else:
             await self._send_reply(f"❌ {self._esc(result['message'])}")
 
     async def _cmd_watchlist(self):
-        """Liste les watches actives"""
         watches = self.watchlist.get_all_watches()
         stats = self.watchlist.get_stats()
 
         if not watches:
             await self._send_reply(
                 f"🔔 *Watchlist vide*\n\n"
-                f"💡 Commandes:\n"
-                f"`/watchmc SYMBOL 500K`\n"
-                f"`/watchpump SYMBOL 100`\n"
-                f"`/watchdrop SYMBOL 30`"
+                f"💡 `/watchmc SYMBOL 500K`\n"
+                f"💡 `/watchpump SYMBOL 100`\n"
+                f"💡 `/watchdrop SYMBOL 30`"
             )
             return
 
@@ -1415,11 +1280,8 @@ class MemeSniper:
 
         for w in watches[:15]:
             type_emoji = {
-                "MC_TARGET": "🎯",
-                "PUMP":      "🚀",
-                "DROP":      "📉",
-                "PRICE":     "💰",
-                "VOLUME":    "📊",
+                "MC_TARGET": "🎯", "PUMP": "🚀", "DROP": "📉",
+                "PRICE": "💰", "VOLUME": "📊",
             }.get(w["type"], "🔔")
 
             lines.append(
@@ -1429,16 +1291,12 @@ class MemeSniper:
 
         await self._send_reply("\n".join(lines))
 
-    # ═══════════════════════════════════════════════════
-    # COMMANDES - BULLS / WALLETS / OPTIMIZER
-    # ═══════════════════════════════════════════════════
-
     async def _cmd_positions(self):
         positions = self.sell_generator.get_positions()
         if not positions:
             await self._send_reply(
                 f"💰 *Positions vides*\n\n"
-                f"💡 `/watch <mint>` pour surveiller"
+                f"💡 `/watch <mint>`"
             )
             return
 
@@ -1456,7 +1314,6 @@ class MemeSniper:
         await self._send_reply("\n".join(lines))
 
     async def _cmd_watch_position(self, mint: str):
-        """Ajouter position au sell tracker"""
         if not mint or len(mint) < 32:
             await self._send_reply("❌ `/watch <mint>`")
             return
@@ -1543,12 +1400,7 @@ class MemeSniper:
             lines.append(f"  {self._esc(k)}: `{v}`")
         await self._send_reply("\n".join(lines))
 
-    # ═══════════════════════════════════════════════════
-    # COMMANDES - SOCIAL / REPORT / ADMIN
-    # ═══════════════════════════════════════════════════
-
     async def _cmd_social(self, args: str):
-        """Analyse le buzz d'un token : /social PEPE"""
         parts = args.split()
         if not parts:
             await self._send_reply("❌ `/social SYMBOL [MINT]`")
@@ -1557,10 +1409,9 @@ class MemeSniper:
         symbol = parts[0].upper()
         mint = parts[1] if len(parts) > 1 else None
 
-        await self._send_reply(f"🐦 Analyse Twitter `${self._esc(symbol)}`\\.\\.\\.")
+        await self._send_reply(f"🐦 Analyse `${self._esc(symbol)}`\\.\\.\\.")
 
         result = await self.social_score.analyze_token(symbol, mint)
-
         emoji = self.social_score.get_score_emoji(result["score"])
 
         lines = [
@@ -1571,15 +1422,12 @@ class MemeSniper:
             f"",
             f"📊 Score: *`{result['score']}/100`* \\({self._esc(result['level'])}\\)",
             f"",
-            f"📈 *Mentions :*",
-            f"  1h: `{result['mentions_1h']}`",
-            f"  24h: `{result['mentions_24h']}`",
-            f"  Utilisateurs: `{result['unique_users']}`",
+            f"📈 Mentions 1h: `{result['mentions_1h']}`",
+            f"📈 Mentions 24h: `{result['mentions_24h']}`",
+            f"👥 Utilisateurs: `{result['unique_users']}`",
             f"",
-            f"💭 *Sentiment :*",
-            f"  ✅ Positif: `{result['sentiment_pos']}%`",
-            f"  ❌ Négatif: `{result['sentiment_neg']}%`",
-            f"  ➡️ Neutre: `{result['sentiment_neutral']}%`",
+            f"✅ Positif: `{result['sentiment_pos']}%`",
+            f"❌ Négatif: `{result['sentiment_neg']}%`",
             f"",
             f"⚡ Vélocité: `{result['velocity']:.1f}x`",
             f"🗑️ Spam: `{result['spam_ratio']}%`",
@@ -1591,23 +1439,19 @@ class MemeSniper:
         if result["influencers"]:
             lines.append(f"\n👥 *INFLUENCEURS :*")
             for inf in result["influencers"]:
-                lines.append(
-                    f"  Tier {inf['tier']}: @{self._esc(inf['username'])}"
-                )
+                lines.append(f"  Tier {inf['tier']}: @{self._esc(inf['username'])}")
 
         await self._send_reply("\n".join(lines))
 
     async def _cmd_report(self):
-        """Force l'envoi du rapport quotidien"""
         await self._send_reply("📊 Génération du rapport\\.\\.\\.")
         try:
             await self.csv_exporter.force_daily_report()
-            await self._send_reply("✅ Rapport envoyé et CSV exportés")
+            await self._send_reply("✅ Rapport envoyé")
         except Exception as e:
             await self._send_reply(f"❌ {self._esc(str(e))}")
 
     async def _cmd_admin(self):
-        """Stats admin security"""
         stats = self.admin_security.get_stats()
         admins = self.admin_security.get_authorized_admins()
 
@@ -1615,9 +1459,8 @@ class MemeSniper:
             f"🔐 *ADMIN SECURITY*",
             f"━━━━━━━━━━━━━━",
             f"",
-            f"Admins autorisés: `{stats['authorized_admins']}`",
-            f"Commandes total: `{stats['total_commands']}`",
-            f"Utilisateurs actifs: `{stats['active_users']}`",
+            f"Admins: `{stats['authorized_admins']}`",
+            f"Commandes: `{stats['total_commands']}`",
             f"Blacklistés: `{stats['blacklisted']}`",
             f"Violations: `{stats['total_violations']}`",
             f"",
@@ -1673,7 +1516,7 @@ class MemeSniper:
             "/mlstats\n\n"
             "🔐 *Système :*\n"
             "/report /admin\n"
-            "/pause /resume /help\n"
+            "/pause /resume /help"
         )
         await self._send_reply(msg)
 
@@ -1683,10 +1526,6 @@ class MemeSniper:
     def _esc(self, text: str) -> str:
         special = r'_*[]()~`>#+-=|{}.!'
         return "".join(f"\\{c}" if c in special else c for c in str(text))
-
-    # ═══════════════════════════════════════════════════
-    # HANDLERS TOKENS
-    # ═══════════════════════════════════════════════════
 
     async def handle_new_token_ws(self, token_data: dict):
         if self.paused:
@@ -1806,7 +1645,6 @@ class MemeSniper:
             logger.error(f"Sell handler : {e}")
 
     async def handle_dump_signal(self, dump_data: dict):
-        """Alerte de dump"""
         try:
             symbol = dump_data["symbol"]
             mint = dump_data["mint"]
@@ -1815,10 +1653,8 @@ class MemeSniper:
             severity = dump_data["severity"]
 
             emoji_map = {
-                "COLLAPSE":   "💀💀💀",
-                "MAJOR_DUMP": "📉📉",
-                "PANIC_SELL": "😱",
-                "CRASH":      "📉",
+                "COLLAPSE": "💀💀💀", "MAJOR_DUMP": "📉📉",
+                "PANIC_SELL": "😱", "CRASH": "📉",
             }
             emoji = emoji_map.get(severity, "📉")
 
@@ -1841,14 +1677,11 @@ class MemeSniper:
             self.dump_alerts_sent += 1
 
             if self.dashboard:
-                self.dashboard.add_event(
-                    f"📉 DUMP ${symbol} {pct:.0f}%"
-                )
+                self.dashboard.add_event(f"📉 DUMP ${symbol} {pct:.0f}%")
         except Exception as e:
             logger.error(f"Dump handler : {e}")
 
     async def handle_whale_sell_signal(self, sell_data: dict):
-        """Alerte de whale sell"""
         try:
             symbol = sell_data["symbol"]
             mint = sell_data["mint"]
@@ -1885,14 +1718,11 @@ class MemeSniper:
             self.whale_sell_alerts_sent += 1
 
             if self.dashboard:
-                self.dashboard.add_event(
-                    f"🐋 WHALE SELL ${symbol} ${amount:,.0f}"
-                )
+                self.dashboard.add_event(f"🐋 WHALE SELL ${symbol} ${amount:,.0f}")
         except Exception as e:
             logger.error(f"Whale sell handler : {e}")
 
     async def handle_watch_triggered(self, alert_data: dict):
-        """Alerte watchlist déclenchée"""
         try:
             watch = alert_data["watch"]
             current = alert_data["current"]
@@ -1900,11 +1730,8 @@ class MemeSniper:
             mint = alert_data["mint"]
 
             type_emoji = {
-                "MC_TARGET": "🎯",
-                "PUMP":      "🚀",
-                "DROP":      "📉",
-                "PRICE":     "💰",
-                "VOLUME":    "📊",
+                "MC_TARGET": "🎯", "PUMP": "🚀", "DROP": "📉",
+                "PRICE": "💰", "VOLUME": "📊",
             }.get(watch["type"], "🔔")
 
             msg = (
@@ -1928,15 +1755,9 @@ class MemeSniper:
             self.watchlist_alerts_sent += 1
 
             if self.dashboard:
-                self.dashboard.add_event(
-                    f"🔔 WATCH ${symbol} {watch['type']}"
-                )
+                self.dashboard.add_event(f"🔔 WATCH ${symbol} {watch['type']}")
         except Exception as e:
             logger.error(f"Watch handler : {e}")
-
-    # ═══════════════════════════════════════════════════
-    # ANALYSE + ALERTE
-    # ═══════════════════════════════════════════════════
 
     async def _analyze_and_alert(self, address: str, source: str):
         if self.paused:
@@ -1972,7 +1793,6 @@ class MemeSniper:
             score = float(analysis.get("score", 0))
             symbol = analysis.get("symbol", "???")
 
-            # Twitter bonus
             twitter_signal = self.twitter_tracker.get_token_twitter_signal(address)
             if not twitter_signal and symbol and symbol != "???":
                 twitter_signal = self.twitter_tracker.get_symbol_twitter_signal(symbol)
@@ -1982,7 +1802,6 @@ class MemeSniper:
                 analysis["score"] = score
                 analysis["twitter_signal"] = twitter_signal
 
-            # ML bonus
             ml_features = self.ml_scorer.extract_features(analysis, analysis, safety)
             ml_bonus = self.ml_scorer.get_ml_bonus(ml_features)
             if ml_bonus != 0.0:
@@ -1996,7 +1815,6 @@ class MemeSniper:
                 f"Safety:{safety.get('score', '?')}/10 | src:{source}"
             )
 
-            # Score minimum dynamique
             min_score = self.auto_optimizer.get_min_score()
             if source.startswith("twitter_"):
                 if "TIER1" in source:
@@ -2024,7 +1842,6 @@ class MemeSniper:
             if decision["action"] == "IGNORE":
                 return
 
-            # Chart
             chart_url = None
             try:
                 chart_url = await self.chart_screenshot.get_chart_url(address)
@@ -2060,9 +1877,7 @@ class MemeSniper:
                     except Exception:
                         pass
 
-                logger.info(
-                    f"[ALERT] ✅ {symbol} {score:.1f}/10 → {decision['action']}"
-                )
+                logger.info(f"[ALERT] ✅ {symbol} {score:.1f}/10 → {decision['action']}")
                 if self.dashboard:
                     self.dashboard.add_event(
                         f"🚨 {decision['tier']}: {symbol} {score:.1f}/10"
@@ -2084,10 +1899,6 @@ class MemeSniper:
         )[:250])
         self.alerted_tokens = newest
 
-
-# ═══════════════════════════════════════════════════════
-# CLEANUP
-# ═══════════════════════════════════════════════════════
 
 async def cleanup_all(bot: MemeSniper):
     logger.info("[CLEANUP] 🛑 Arrêt en cours...")
@@ -2153,10 +1964,6 @@ async def cleanup_all(bot: MemeSniper):
 
     logger.info("[CLEANUP] 🎉 Arrêt complet")
 
-
-# ═══════════════════════════════════════════════════════
-# ENTRY POINT
-# ═══════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     bot = MemeSniper()
