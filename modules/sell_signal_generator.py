@@ -1,14 +1,14 @@
-# modules/sell_signal_generator.py v1.1
+# modules/sell_signal_generator.py v1.2
 """
-Sell Signal Generator v1.1
-Fix : Cooldown 15 min entre alertes du même token
-Fix : Auto-close positions à -70% (tokens morts)
+Sell Signal Generator v1.2
+- Cooldown 15 min entre alertes du même token
+- Auto-close positions à -70% (tokens morts)
+- Log verbeux réduit
 """
 
 import asyncio
 import aiohttp
 import time
-from datetime import datetime, timezone
 from utils.logger import get_logger
 
 logger = get_logger("sell_signal")
@@ -28,10 +28,8 @@ class SellSignalGenerator:
     VOLUME_DROP_THRESHOLD    = 50
     NEGATIVE_5M_THRESHOLD    = -10
     CHECK_INTERVAL           = 60
-
-    # v1.1 : Cooldown pour éviter le spam
-    ALERT_COOLDOWN           = 900   # 15 minutes
-    AUTO_CLOSE_PNL           = -70   # Ferme auto si PnL < -70%
+    ALERT_COOLDOWN           = 900   # 15 minutes entre alertes
+    AUTO_CLOSE_PNL           = -70   # Auto-close si PnL < -70%
 
     def __init__(self, alert_callback):
         self.alert_callback = alert_callback
@@ -42,6 +40,7 @@ class SellSignalGenerator:
         self.tp_hits       = 0
         self.sl_hits       = 0
         self.dump_saves    = 0
+        self.auto_closed   = 0
 
     async def start(self):
         self.session = aiohttp.ClientSession(
@@ -49,8 +48,8 @@ class SellSignalGenerator:
         )
         self.running = True
         logger.info(
-            f"💰 SellSignalGenerator v1.1 démarré "
-            f"(cooldown: {self.ALERT_COOLDOWN}s, "
+            f"💰 SellSignalGenerator v1.2 démarré "
+            f"(cooldown: {self.ALERT_COOLDOWN}s | "
             f"auto-close: {self.AUTO_CLOSE_PNL}%)"
         )
         asyncio.create_task(self._monitor_loop())
@@ -86,7 +85,7 @@ class SellSignalGenerator:
             "sl_triggered":    False,
             "max_gain":        0,
             "last_pnl":        0,
-            "last_alert_time": 0,  # v1.1
+            "last_alert_time": 0,
             "snapshots":       [],
         }
 
@@ -100,6 +99,13 @@ class SellSignalGenerator:
             pos = self.positions[mint]
             logger.info(f"💰 Position fermée : ${pos['symbol']}")
             del self.positions[mint]
+
+    def clear_all_positions(self):
+        """Ferme TOUTES les positions d'un coup"""
+        count = len(self.positions)
+        self.positions.clear()
+        logger.info(f"💰 {count} positions supprimées")
+        return count
 
     def get_positions_count(self) -> int:
         return len(self.positions)
@@ -129,13 +135,14 @@ class SellSignalGenerator:
             if not pos:
                 return
 
-            # v1.1 : Auto-close si le token est mort
+            # Auto-close si le token est mort
             if pos.get("last_pnl", 0) < self.AUTO_CLOSE_PNL:
                 logger.info(
                     f"💰 Auto-close ${pos['symbol']} : "
-                    f"PnL {pos['last_pnl']:.0f}% (token mort)"
+                    f"PnL {pos['last_pnl']:.0f}%"
                 )
                 del self.positions[mint]
+                self.auto_closed += 1
                 return
 
             current = await self._fetch_token_data(mint)
@@ -149,8 +156,6 @@ class SellSignalGenerator:
                 return
 
             pnl_pct = ((current_price - entry_price) / entry_price) * 100
-
-            # v1.1 : Mémoriser dernier PnL
             pos["last_pnl"] = pnl_pct
 
             if pnl_pct > pos["max_gain"]:
@@ -175,7 +180,7 @@ class SellSignalGenerator:
                 await self._trigger_alert(pos, current, pnl_pct, signals)
 
         except Exception as e:
-            logger.error(f"Check position error : {e}")
+            logger.debug(f"Check position error : {e}")
 
     async def _fetch_token_data(self, mint: str) -> dict:
         try:
@@ -219,8 +224,7 @@ class SellSignalGenerator:
                 "sells_1h":   sells_1h,
             }
 
-        except Exception as e:
-            logger.debug(f"Fetch token data error : {e}")
+        except Exception:
             return None
 
     def _detect_signals(
@@ -236,7 +240,6 @@ class SellSignalGenerator:
             label = tp["label"]
             if label in pos["tp_triggered"]:
                 continue
-
             if pnl_pct >= tp["pct"]:
                 signals.append({
                     "type":     "TP",
@@ -265,7 +268,6 @@ class SellSignalGenerator:
         # BUY RATIO CHUTE
         entry_br = pos["entry_buy_ratio"]
         current_br = current.get("buy_ratio", 0)
-
         if entry_br > 0:
             br_drop = entry_br - current_br
             if br_drop >= self.BUY_RATIO_DROP_THRESHOLD:
@@ -280,7 +282,6 @@ class SellSignalGenerator:
         # VOLUME S'ÉCROULE
         entry_vol = pos["entry_volume_1h"]
         current_vol = current.get("volume_1h", 0)
-
         if entry_vol > 10_000 and current_vol > 0:
             vol_drop_pct = ((entry_vol - current_vol) / entry_vol) * 100
             if vol_drop_pct >= self.VOLUME_DROP_THRESHOLD:
@@ -309,8 +310,8 @@ class SellSignalGenerator:
             signals.append({
                 "type":     "PROFIT_LOST",
                 "severity": "WARNING",
-                "message":  f"⚠️ Perd les profits : max +{max_gain:.0f}% → +{pnl_pct:.0f}%",
-                "action":   "Sécuriser les gains restants",
+                "message":  f"⚠️ Perd profits : max +{max_gain:.0f}% → +{pnl_pct:.0f}%",
+                "action":   "Sécuriser gains",
                 "priority": 8,
             })
 
@@ -337,21 +338,15 @@ class SellSignalGenerator:
         pnl_pct: float,
         signals: list,
     ):
-        """Déclenche une alerte de vente"""
         try:
-            # v1.1 : COOLDOWN pour éviter le spam
             now = time.time()
             last_alert = pos.get("last_alert_time", 0)
 
-            # Sauf si SL déclenché (urgence), on respecte le cooldown
+            # COOLDOWN pour éviter le spam
             has_sl = any(s["type"] == "SL" for s in signals)
             if not has_sl:
                 elapsed = now - last_alert
                 if elapsed < self.ALERT_COOLDOWN:
-                    logger.debug(
-                        f"💰 Cooldown ${pos['symbol']} : "
-                        f"{int(self.ALERT_COOLDOWN - elapsed)}s restant"
-                    )
                     return
 
             pos["last_alert_time"] = now
@@ -391,10 +386,8 @@ class SellSignalGenerator:
                 await self.alert_callback(signal_data)
 
             logger.info(
-                f"💰 SELL SIGNAL ${pos['symbol']} : "
-                f"PnL {pnl_pct:+.0f}% | "
-                f"Confiance: {confidence} | "
-                f"{len(signals)} signaux"
+                f"💰 SELL ${pos['symbol']} : "
+                f"PnL {pnl_pct:+.0f}% | Conf: {confidence}"
             )
 
         except Exception as e:
@@ -407,4 +400,5 @@ class SellSignalGenerator:
             "tp_hits":        self.tp_hits,
             "sl_hits":        self.sl_hits,
             "dump_saves":     self.dump_saves,
+            "auto_closed":    self.auto_closed,
         }

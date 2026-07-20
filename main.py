@@ -1,6 +1,10 @@
-# main.py — v13.0 FINAL
+# main.py — v13.1 FINAL
 # Bot Sniper Memecoin Solana - ULTIMATE EDITION
 # ═══════════════════════════════════════════════
+# v13.1 FIX :
+# - Pas d'ajout auto au sell tracker (fini le spam)
+# - Nouvelle commande /clearpositions pour tout nettoyer
+# - Position tracker manuel uniquement via /watch <mint>
 
 import asyncio
 import gc
@@ -222,7 +226,7 @@ class MemeSniper:
         ml_stats = self.ml_scorer.get_stats()
         opt_config = self.auto_optimizer.get_current_config()
 
-        logger.info("🚀 MemeSniper v13.0 FINAL démarré !")
+        logger.info("🚀 MemeSniper v13.1 FINAL démarré !")
         logger.info(f"   Score min : {opt_config.get('min_score', MIN_SCORE)}/10")
         logger.info(f"   Alpha Wallets : {total_wallets} (T1:{t1} T1.5:{t15} T2:{t2})")
         logger.info(f"   Twitter : {twitter_count} (T1:{t1_tw} T2:{t2_tw} T3:{t3_tw})")
@@ -648,28 +652,29 @@ class MemeSniper:
                 return
 
         routes = {
-            "/status":       self._cmd_status,
-            "/stats":        self._cmd_stats,
-            "/alertes":      self._cmd_alertes,
-            "/mlstats":      self._cmd_mlstats,
-            "/bullrun":      self._cmd_bullrun,
-            "/backtest":     self._cmd_backtest,
-            "/positions":    self._cmd_positions,
-            "/wallets":      self._cmd_wallets,
-            "/candidates":   self._cmd_candidates,
-            "/optimize":     self._cmd_optimize,
-            "/portfolio":    self._cmd_portfolio,
-            "/pnl":          self._cmd_pnl,
-            "/trades":       self._cmd_trades,
-            "/watchlist":    self._cmd_watchlist,
-            "/compare":      self._cmd_compare_strategies,
-            "/strategies":   self._cmd_list_strategies,
-            "/report":       self._cmd_report,
-            "/admin":        self._cmd_admin,
-            "/pause":        self._cmd_pause,
-            "/resume":       self._cmd_resume,
-            "/help":         self._cmd_help,
-            "/start":        self._cmd_help,
+            "/status":         self._cmd_status,
+            "/stats":          self._cmd_stats,
+            "/alertes":        self._cmd_alertes,
+            "/mlstats":        self._cmd_mlstats,
+            "/bullrun":        self._cmd_bullrun,
+            "/backtest":       self._cmd_backtest,
+            "/positions":      self._cmd_positions,
+            "/clearpositions": self._cmd_clear_positions,
+            "/wallets":        self._cmd_wallets,
+            "/candidates":     self._cmd_candidates,
+            "/optimize":       self._cmd_optimize,
+            "/portfolio":      self._cmd_portfolio,
+            "/pnl":            self._cmd_pnl,
+            "/trades":         self._cmd_trades,
+            "/watchlist":      self._cmd_watchlist,
+            "/compare":        self._cmd_compare_strategies,
+            "/strategies":     self._cmd_list_strategies,
+            "/report":         self._cmd_report,
+            "/admin":          self._cmd_admin,
+            "/pause":          self._cmd_pause,
+            "/resume":         self._cmd_resume,
+            "/help":           self._cmd_help,
+            "/start":          self._cmd_help,
         }
 
         handler = routes.get(text_lower)
@@ -707,7 +712,7 @@ class MemeSniper:
         ws_str = "✅ Actif" if self.ws_active else "❌ Inactif"
 
         msg = (
-            f"🤖 *MemeSniper v13\\.0 FINAL*\n"
+            f"🤖 *MemeSniper v13\\.1 FINAL*\n"
             f"━━━━━━━━━━━━━━\n\n"
             f"⏱ Uptime: `{h}h {m}m {s}s`\n"
             f"🔄 État: *{self._esc(pause_str)}*\n"
@@ -1297,7 +1302,8 @@ class MemeSniper:
         if not positions:
             await self._send_reply(
                 f"💰 *Positions vides*\n\n"
-                f"💡 `/watch <mint>`"
+                f"💡 `/watch <mint>` pour surveiller\n"
+                f"un token que tu as acheté"
             )
             return
 
@@ -1312,7 +1318,20 @@ class MemeSniper:
             lines.append(f"  TPs: `{len(pos['tp_triggered'])}/4`")
             lines.append(f"  Ouvert: `{elapsed_str}`")
 
+        lines.append("")
+        lines.append("💡 `/close SYM` ou `/clearpositions`")
+
         await self._send_reply("\n".join(lines))
+
+    async def _cmd_clear_positions(self):
+        """Ferme TOUTES les positions surveillées d'un coup"""
+        count = self.sell_generator.clear_all_positions()
+        await self._send_reply(
+            f"✅ *{count} positions supprimées*\n\n"
+            f"Le sell tracker est vide\\.\n"
+            f"Utilise `/watch <mint>` pour surveiller\n"
+            f"les tokens que tu achètes vraiment\\."
+        )
 
     async def _cmd_watch_position(self, mint: str):
         if not mint or len(mint) < 32:
@@ -1487,7 +1506,7 @@ class MemeSniper:
 
     async def _cmd_help(self):
         msg = (
-            "🤖 *MemeSniper v13\\.0 FINAL*\n"
+            "🤖 *MemeSniper v13\\.1 FINAL*\n"
             "━━━━━━━━━━━━━━\n\n"
             "📊 *Info :*\n"
             "/status /stats /alertes\n"
@@ -1502,7 +1521,7 @@ class MemeSniper:
             "/unwatch `SYM` /watchlist\n\n"
             "💰 *Sell Signals :*\n"
             "/positions /watch `MINT`\n"
-            "/close `SYM`\n\n"
+            "/close `SYM` /clearpositions\n\n"
             "📊 *Stratégies :*\n"
             "/strategies /strategy `NAME`\n"
             "/compare\n\n"
@@ -1841,6 +1860,10 @@ class MemeSniper:
 
             decision = self.alert_sender.decision_eng.decide(analysis)
             if decision["action"] == "IGNORE":
+                logger.info(
+                    f"[DECISION] {symbol} IGNORÉ : "
+                    f"{decision.get('reason', 'raison inconnue')}"
+                )
                 return
 
             chart_url = None
@@ -1863,20 +1886,8 @@ class MemeSniper:
                     self.position_tracker.add_position(
                         analysis, decision, decision["amount_eur"]
                     )
-                    try:
-                        sell_data = await self.sell_generator._fetch_token_data(address)
-                        if sell_data and sell_data.get("price", 0) > 0:
-                            self.sell_generator.add_position(
-                                mint=address, symbol=symbol,
-                                entry_price=sell_data["price"],
-                                entry_mc=sell_data["market_cap"],
-                                entry_liquidity=sell_data["liquidity"],
-                                entry_buy_ratio=sell_data["buy_ratio"],
-                                entry_volume_1h=sell_data["volume_1h"],
-                                source=source,
-                            )
-                    except Exception:
-                        pass
+                    # v13.1 : PLUS d'ajout auto au sell tracker
+                    # Utilise /watch <mint> manuellement si tu achètes vraiment
 
                 logger.info(f"[ALERT] ✅ {symbol} {score:.1f}/10 → {decision['action']}")
                 if self.dashboard:
