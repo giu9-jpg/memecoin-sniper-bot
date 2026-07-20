@@ -1,8 +1,8 @@
-# main.py — v12.3 FINAL
+# main.py — v12.4 FINAL
 # Bot Sniper Memecoin Solana - Ultimate Edition
 # ═══════════════════════════════════════════════
-# ✅ TokenSafety v1.1 (fix pump.fun timing)
-# ✅ Attente 45s avant analyse (liquidité)
+# ✅ TokenSafety v1.2 (fix pump.fun timing)
+# ✅ Bull Run Analyzer v1.0 (apprentissage auto)
 # ✅ Copy Trading + Early Detector + Whale Inflow
 # ✅ Momentum Detector v1.2
 # ✅ ML Scorer + Dashboard + Multi-DEX
@@ -37,6 +37,7 @@ from modules.dashboard           import DashboardServer
 from modules.raydium_monitor     import RadyiumMonitor
 from modules.momentum_detector   import MomentumDetector
 from modules.ml_scorer           import MLScorer
+from modules.bull_run_analyzer   import BullRunAnalyzer
 
 from config.alpha_wallets        import (
     ALPHA_WALLETS,
@@ -87,6 +88,9 @@ class MemeSniper:
         self.token_safety = TokenSafety(self.config.solana_rpc_url)
 
         self.ml_scorer = MLScorer()
+
+        # ── Bull Run Analyzer v12.4 ───────────────────
+        self.bull_analyzer = BullRunAnalyzer()
 
         self.analyzer = TokenAnalyzer(
             alpha_tracker=self.alpha_tracker,
@@ -152,7 +156,7 @@ class MemeSniper:
 
         try:
             await self.token_safety.start()
-            logger.info("🛡️ TokenSafety v1.1 : ACTIF")
+            logger.info("🛡️ TokenSafety v1.2 : ACTIF")
         except Exception as e:
             logger.error(f"❌ Impossible de démarrer TokenSafety : {e}")
             raise
@@ -169,6 +173,12 @@ class MemeSniper:
         except Exception as e:
             logger.error(f"❌ Impossible de démarrer MomentumDetector : {e}")
 
+        try:
+            await self.bull_analyzer.start()
+            logger.info("🎯 BullRunAnalyzer v1.0 : ACTIF")
+        except Exception as e:
+            logger.error(f"❌ Impossible de démarrer BullRunAnalyzer : {e}")
+
         total_wallets = len(get_all_wallets())
         t1            = len(ALPHA_WALLETS.get("TIER1",   []))
         t15           = len(ALPHA_WALLETS.get("TIER1_5", []))
@@ -181,11 +191,12 @@ class MemeSniper:
 
         ml_stats = self.ml_scorer.get_stats()
 
-        logger.info("🚀 MemeSniper v12.3 FINAL démarré !")
+        logger.info("🚀 MemeSniper v12.4 FINAL démarré !")
         logger.info(f"   Score minimum      : {MIN_SCORE}/10")
         logger.info(f"   Smart Signals      : ACTIVÉS")
         logger.info(f"   Market Context     : ACTIF")
-        logger.info(f"   Anti-Rug Safety    : ACTIF (v1.1 - fix pump.fun)")
+        logger.info(f"   Anti-Rug Safety    : ACTIF (v1.2)")
+        logger.info(f"   Bull Analyzer      : ACTIF (v1.0)")
         logger.info(
             f"   Alpha Wallets      : ACTIF "
             f"({total_wallets} wallets | "
@@ -547,6 +558,7 @@ class MemeSniper:
                     f"{len(self.ws_client.seen_tokens)} | "
                     f"raydium_seen="
                     f"{len(self.raydium_monitor.seen_tokens)} | "
+                    f"bulls={len(self.bull_analyzer.bulls)} | "
                     f"gc={collected}"
                 )
             except asyncio.CancelledError:
@@ -592,6 +604,7 @@ class MemeSniper:
                     f"Twitter:{self.twitter_signals} | "
                     f"Raydium:{self.raydium_tokens} | "
                     f"Momentum:{self.momentum_alerts} | "
+                    f"Bulls:{len(self.bull_analyzer.bulls)} | "
                     f"ML:{ml_st.get('trades', 0)} trades | "
                     f"Positions:{n_pos} | "
                     f"Marché:{regime} | "
@@ -706,6 +719,7 @@ class MemeSniper:
             "/stats":   self._cmd_stats,
             "/alertes": self._cmd_alertes,
             "/mlstats": self._cmd_mlstats,
+            "/bullrun": self._cmd_bullrun,
             "/pause":   self._cmd_pause,
             "/resume":  self._cmd_resume,
             "/help":    self._cmd_help,
@@ -749,6 +763,7 @@ class MemeSniper:
         ])
 
         ml_st = self.ml_scorer.get_stats()
+        n_bulls = len(self.bull_analyzer.bulls)
 
         dash_str = ""
         if self.dashboard:
@@ -760,14 +775,15 @@ class MemeSniper:
             dash_str = self._esc(dash_str)
 
         msg = (
-            f"🤖 *MemeSniper v12\\.3 FINAL*\n"
+            f"🤖 *MemeSniper v12\\.4 FINAL*\n"
             f"━━━━━━━━━━━━━━\n\n"
             f"⏱ Uptime: `{h}h {m}m {s}s`\n"
             f"🔄 État: *{self._esc(pause_str)}*\n"
             f"📡 WebSocket: {ws_str}\n"
-            f"🛡️ Anti\\-Rug: ✅ Actif \\(v1\\.1\\)\n"
+            f"🛡️ Anti\\-Rug: ✅ Actif \\(v1\\.2\\)\n"
             f"🔄 Multi\\-DEX: ✅ Actif\n"
             f"🔥 Momentum: ✅ Actif \\(v1\\.2\\)\n"
+            f"🎯 Bull Analyzer: ✅ `{n_bulls}` bulls\n"
             f"🧠 ML: {ml_st.get('trades', 0)} trades\n"
             f"{dash_str}\n"
             f"📊 *Activité:*\n"
@@ -952,6 +968,90 @@ class MemeSniper:
 
         await self._send_reply(msg)
 
+    async def _cmd_bullrun(self):
+        """Commande /bullrun - Statistiques des bulls détectés"""
+        stats = self.bull_analyzer.get_stats(days=7)
+
+        if stats["total"] == 0:
+            msg = (
+                f"🎯 *Bull Run Analyzer*\n"
+                f"━━━━━━━━━━━━━━\n\n"
+                f"{self._esc(stats.get('message', 'Pas de données'))}\n\n"
+                f"⏳ L'analyzer scanne toutes les 5 min\\.\n"
+                f"Reviens dans quelques heures\\.\n\n"
+                f"📊 Scans effectués: `{self.bull_analyzer.tokens_scanned}`"
+            )
+            await self._send_reply(msg)
+            return
+
+        lines = [
+            f"🎯 *BULL RUN ANALYZER*",
+            f"━━━━━━━━━━━━━━",
+            f"",
+            f"📊 Bulls \\(7j\\) : *{stats['total']}*",
+            f"📈 Gain moyen : *\\+{stats['avg_gain']:.0f}%*",
+            f"",
+        ]
+
+        if stats.get("hours"):
+            lines.append(f"⏰ *TOP HEURES UTC :*")
+            for h, count in stats["hours"][:3]:
+                pct = round(count / stats["total"] * 100)
+                lines.append(f"  `{h:02d}h` : {count} bulls \\({pct}%\\)")
+            lines.append("")
+
+        if stats.get("days_week"):
+            lines.append(f"📅 *TOP JOURS :*")
+            for d, count in stats["days_week"]:
+                pct = round(count / stats["total"] * 100)
+                lines.append(f"  {self._esc(d)} : {pct}%")
+            lines.append("")
+
+        if stats.get("mc_buckets"):
+            lines.append(f"💰 *MARKET CAP :*")
+            for bucket, count in stats["mc_buckets"][:3]:
+                pct = round(count / stats["total"] * 100)
+                lines.append(
+                    f"  {self._esc(bucket)} : {pct}%"
+                )
+            lines.append("")
+
+        if stats.get("liq_buckets"):
+            lines.append(f"💧 *LIQUIDITÉ :*")
+            for bucket, count in stats["liq_buckets"][:3]:
+                pct = round(count / stats["total"] * 100)
+                lines.append(
+                    f"  {self._esc(bucket)} : {pct}%"
+                )
+            lines.append("")
+
+        if stats.get("br_buckets"):
+            lines.append(f"🟢 *BUY RATIO 1h :*")
+            for bucket, count in stats["br_buckets"][:3]:
+                pct = round(count / stats["total"] * 100)
+                lines.append(
+                    f"  {self._esc(bucket)} : {pct}%"
+                )
+            lines.append("")
+
+        recos = self.bull_analyzer.get_recommendations()
+        if recos:
+            lines.append(f"🧠 *RECOMMANDATIONS :*")
+            for r in recos[:5]:
+                lines.append(f"  • {self._esc(r)}")
+            lines.append("")
+
+        if stats.get("top_5"):
+            lines.append(f"🏆 *TOP 5 GAINERS 7j :*")
+            for i, b in enumerate(stats["top_5"], 1):
+                lines.append(
+                    f"  `{i}\\.` ${self._esc(b['symbol'])} "
+                    f"\\+{b['change_24h']:.0f}%"
+                )
+
+        msg = "\n".join(lines)
+        await self._send_reply(msg)
+
     async def _cmd_pause(self):
         self.paused = True
         await self._send_reply(
@@ -977,12 +1077,13 @@ class MemeSniper:
 
     async def _cmd_help(self):
         msg = (
-            "🤖 *MemeSniper v12\\.3 FINAL*\n"
+            "🤖 *MemeSniper v12\\.4 FINAL*\n"
             "━━━━━━━━━━━━━━\n\n"
             "📊 *Info:*\n"
             "/status \\- État du bot\n"
             "/stats \\- Performance\n"
-            "/alertes \\- 10 dernières alertes\n\n"
+            "/alertes \\- 10 dernières alertes\n"
+            "/bullrun \\- Analyse des bulls 🆕\n\n"
             "🔍 *Analyse:*\n"
             "/check `<mint>` \\- Safety check\n\n"
             "🧠 *ML \\(apprentissage\\):*\n"
@@ -1523,6 +1624,13 @@ async def cleanup_all(bot: MemeSniper):
             logger.info("[CLEANUP] ✅ MomentumDetector arrêté")
     except Exception as e:
         logger.error(f"[CLEANUP] momentum_detector.stop() : {e}")
+
+    try:
+        if bot.bull_analyzer:
+            await bot.bull_analyzer.stop()
+            logger.info("[CLEANUP] ✅ BullRunAnalyzer arrêté")
+    except Exception as e:
+        logger.error(f"[CLEANUP] bull_analyzer.stop() : {e}")
 
     try:
         if bot.dashboard:
