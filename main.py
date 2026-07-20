@@ -1,11 +1,13 @@
-# main.py — v12.7 FINAL
+# main.py — v12.9 FINAL
 # Bot Sniper Memecoin Solana - Ultimate Edition
 # ═══════════════════════════════════════════════
 # ✅ TokenSafety v1.2 (fix pump.fun timing)
 # ✅ Bull Run Analyzer v1.0 (apprentissage auto)
 # ✅ Backtester v1.0 (simulation historique)
 # ✅ Sell Signal Generator v1.0 (quand vendre)
-# ✅ Chart Screenshot v1.0 (photos dans alertes) 🆕
+# ✅ Chart Screenshot v1.0 (photos dans alertes)
+# ✅ Wallet Discovery v1.0 (découverte auto alpha) 🆕
+# ✅ Auto-Optimizer v1.0 (ajustement auto seuils) 🆕
 # ✅ Copy Trading + Early Detector + Whale Inflow
 # ✅ Momentum Detector v1.2
 # ✅ ML Scorer + Dashboard + Multi-DEX
@@ -44,6 +46,8 @@ from modules.bull_run_analyzer     import BullRunAnalyzer
 from modules.backtester            import Backtester
 from modules.sell_signal_generator import SellSignalGenerator
 from modules.chart_screenshot      import ChartScreenshot
+from modules.wallet_discovery      import WalletDiscovery
+from modules.auto_optimizer        import AutoOptimizer
 
 from config.alpha_wallets        import (
     ALPHA_WALLETS,
@@ -110,6 +114,9 @@ class MemeSniper:
         # ── Chart Screenshot v12.7 ────────────────────
         self.chart_screenshot = ChartScreenshot()
 
+        # ── Wallet Discovery v12.8 ────────────────────
+        self.wallet_discovery = WalletDiscovery(self.bull_analyzer)
+
         self.analyzer = TokenAnalyzer(
             alpha_tracker=self.alpha_tracker,
             early_detector=self.early_detector,
@@ -118,6 +125,14 @@ class MemeSniper:
 
         self.alert_sender = AlertSender(
             market_context=self.market_context
+        )
+
+        # ── Auto-Optimizer v12.9 ──────────────────────
+        # (nécessite alert_sender qui est initialisé au-dessus)
+        self.auto_optimizer = AutoOptimizer(
+            ml_scorer=self.ml_scorer,
+            bull_analyzer=self.bull_analyzer,
+            alert_sender=self.alert_sender,
         )
 
         self.whale_tracker    = WhaleTracker()
@@ -209,6 +224,18 @@ class MemeSniper:
         except Exception as e:
             logger.error(f"❌ Impossible de démarrer ChartScreenshot : {e}")
 
+        try:
+            await self.wallet_discovery.start()
+            logger.info("🔍 WalletDiscovery v1.0 : ACTIF")
+        except Exception as e:
+            logger.error(f"❌ Impossible de démarrer WalletDiscovery : {e}")
+
+        try:
+            await self.auto_optimizer.start()
+            logger.info("🎯 AutoOptimizer v1.0 : ACTIF")
+        except Exception as e:
+            logger.error(f"❌ Impossible de démarrer AutoOptimizer : {e}")
+
         total_wallets = len(get_all_wallets())
         t1            = len(ALPHA_WALLETS.get("TIER1",   []))
         t15           = len(ALPHA_WALLETS.get("TIER1_5", []))
@@ -220,9 +247,10 @@ class MemeSniper:
         t3_tw         = len(ALPHA_ACCOUNTS.get("TIER3", []))
 
         ml_stats = self.ml_scorer.get_stats()
+        opt_config = self.auto_optimizer.get_current_config()
 
-        logger.info("🚀 MemeSniper v12.7 FINAL démarré !")
-        logger.info(f"   Score minimum      : {MIN_SCORE}/10")
+        logger.info("🚀 MemeSniper v12.9 FINAL démarré !")
+        logger.info(f"   Score minimum      : {opt_config.get('min_score', MIN_SCORE)}/10 (auto-optimisé)")
         logger.info(f"   Smart Signals      : ACTIVÉS")
         logger.info(f"   Market Context     : ACTIF")
         logger.info(f"   Anti-Rug Safety    : ACTIF (v1.2)")
@@ -230,6 +258,8 @@ class MemeSniper:
         logger.info(f"   Backtester         : ACTIF (v1.0)")
         logger.info(f"   Sell Signals       : ACTIF (v1.0)")
         logger.info(f"   Chart Screenshot   : ACTIF (v1.0)")
+        logger.info(f"   Wallet Discovery   : ACTIF (v1.0)")
+        logger.info(f"   Auto-Optimizer     : ACTIF (v1.0)")
         logger.info(
             f"   Alpha Wallets      : ACTIF "
             f"({total_wallets} wallets | "
@@ -573,6 +603,8 @@ class MemeSniper:
 
                 collected = gc.collect()
 
+                wd_stats = self.wallet_discovery.get_stats()
+
                 logger.info(
                     f"[MEMORY] 🧹 "
                     f"alerted={len(self.alerted_tokens)} | "
@@ -593,6 +625,7 @@ class MemeSniper:
                     f"{len(self.raydium_monitor.seen_tokens)} | "
                     f"bulls={len(self.bull_analyzer.bulls)} | "
                     f"positions={self.sell_generator.get_positions_count()} | "
+                    f"discovered={wd_stats['wallets_tracked']} | "
                     f"gc={collected}"
                 )
             except asyncio.CancelledError:
@@ -627,6 +660,8 @@ class MemeSniper:
 
                 ml_st = self.ml_scorer.get_stats()
                 sell_st = self.sell_generator.get_stats()
+                wd_st = self.wallet_discovery.get_stats()
+                opt_st = self.auto_optimizer.get_stats()
 
                 logger.info(
                     f"[HEALTH] "
@@ -641,6 +676,8 @@ class MemeSniper:
                     f"Momentum:{self.momentum_alerts} | "
                     f"Bulls:{len(self.bull_analyzer.bulls)} | "
                     f"Sells:{sell_st['positions_open']}pos/{sell_st['total_signals']}sig | "
+                    f"Wallets:{wd_st['wallets_tracked']}/{wd_st['candidates_ready']}cand | "
+                    f"Opts:{opt_st['total_optimizations']} | "
                     f"ML:{ml_st.get('trades', 0)} trades | "
                     f"Positions:{n_pos} | "
                     f"Marché:{regime} | "
@@ -763,17 +800,20 @@ class MemeSniper:
             return
 
         routes = {
-            "/status":    self._cmd_status,
-            "/stats":     self._cmd_stats,
-            "/alertes":   self._cmd_alertes,
-            "/mlstats":   self._cmd_mlstats,
-            "/bullrun":   self._cmd_bullrun,
-            "/backtest":  self._cmd_backtest,
-            "/positions": self._cmd_positions,
-            "/pause":     self._cmd_pause,
-            "/resume":    self._cmd_resume,
-            "/help":      self._cmd_help,
-            "/start":     self._cmd_help,
+            "/status":     self._cmd_status,
+            "/stats":      self._cmd_stats,
+            "/alertes":    self._cmd_alertes,
+            "/mlstats":    self._cmd_mlstats,
+            "/bullrun":    self._cmd_bullrun,
+            "/backtest":   self._cmd_backtest,
+            "/positions":  self._cmd_positions,
+            "/wallets":    self._cmd_wallets,
+            "/candidates": self._cmd_candidates,
+            "/optimize":   self._cmd_optimize,
+            "/pause":      self._cmd_pause,
+            "/resume":     self._cmd_resume,
+            "/help":       self._cmd_help,
+            "/start":      self._cmd_help,
         }
 
         handler = routes.get(text_lower)
@@ -815,6 +855,8 @@ class MemeSniper:
         ml_st = self.ml_scorer.get_stats()
         n_bulls = len(self.bull_analyzer.bulls)
         sell_st = self.sell_generator.get_stats()
+        wd_st = self.wallet_discovery.get_stats()
+        opt_st = self.auto_optimizer.get_stats()
 
         dash_str = ""
         if self.dashboard:
@@ -826,7 +868,7 @@ class MemeSniper:
             dash_str = self._esc(dash_str)
 
         msg = (
-            f"🤖 *MemeSniper v12\\.7 FINAL*\n"
+            f"🤖 *MemeSniper v12\\.9 FINAL*\n"
             f"━━━━━━━━━━━━━━\n\n"
             f"⏱ Uptime: `{h}h {m}m {s}s`\n"
             f"🔄 État: *{self._esc(pause_str)}*\n"
@@ -838,6 +880,8 @@ class MemeSniper:
             f"📊 Backtester: ✅ Actif\n"
             f"💰 Sell Signals: ✅ `{sell_st['positions_open']}` positions\n"
             f"📸 Chart Photos: ✅ Actif\n"
+            f"🔍 Wallet Discovery: ✅ `{wd_st['wallets_tracked']}` trackés\n"
+            f"🎯 Auto\\-Optimizer: ✅ `{opt_st['total_optimizations']}` opts\n"
             f"🧠 ML: {ml_st.get('trades', 0)} trades\n"
             f"{dash_str}\n"
             f"📊 *Activité:*\n"
@@ -1024,7 +1068,7 @@ class MemeSniper:
         await self._send_reply(msg)
 
     async def _cmd_bullrun(self):
-        """Commande /bullrun - Statistiques des bulls détectés"""
+        """Commande /bullrun"""
         stats = self.bull_analyzer.get_stats(days=7)
 
         if stats["total"] == 0:
@@ -1230,7 +1274,7 @@ class MemeSniper:
         await self._send_reply(msg)
 
     async def _cmd_positions(self):
-        """Commande /positions - Voir positions surveillées"""
+        """Commande /positions"""
         positions = self.sell_generator.get_positions()
 
         if not positions:
@@ -1293,7 +1337,7 @@ class MemeSniper:
         await self._send_reply(msg)
 
     async def _cmd_watch(self, mint: str):
-        """Commande /watch <mint> - Ajouter position manuellement"""
+        """Commande /watch <mint>"""
         if not mint or len(mint) < 32:
             await self._send_reply(
                 "❌ Format : `/watch <adresse_mint>`\n"
@@ -1334,7 +1378,7 @@ class MemeSniper:
             await self._send_reply(f"❌ Erreur : {self._esc(str(e))}")
 
     async def _cmd_close(self, symbol_or_mint: str):
-        """Commande /close <symbol> - Fermer position"""
+        """Commande /close <symbol>"""
         if not symbol_or_mint:
             await self._send_reply(
                 "❌ Format : `/close <symbol>` ou `/close <mint>`"
@@ -1368,6 +1412,114 @@ class MemeSniper:
             f"TPs atteints : `{len(pos['tp_triggered'])}/4`"
         )
 
+    async def _cmd_wallets(self):
+        """Commande /wallets - Stats Wallet Discovery"""
+        stats = self.wallet_discovery.get_stats()
+
+        msg = (
+            f"🔍 *WALLET DISCOVERY*\n"
+            f"━━━━━━━━━━━━━━\n\n"
+            f"📊 *Statistiques :*\n"
+            f"  Wallets trackés : `{stats['wallets_tracked']}`\n"
+            f"  Bulls analysés : `{stats['bulls_analyzed']}`\n"
+            f"  Candidats prêts : `{stats['candidates_ready']}`\n\n"
+            f"💡 *Comment ça marche :*\n"
+            f"Le bot analyse tous les vrais bulls\n"
+            f"et découvre automatiquement les\n"
+            f"wallets qui achètent en premier\\.\n\n"
+            f"Utilise `/candidates` pour voir\n"
+            f"les meilleurs candidats détectés\\."
+        )
+        await self._send_reply(msg)
+
+    async def _cmd_candidates(self):
+        """Commande /candidates - Voir candidats alpha wallets"""
+        candidates = self.wallet_discovery.get_top_candidates(10)
+
+        if not candidates:
+            msg = (
+                f"🔍 *CANDIDATS ALPHA WALLETS*\n"
+                f"━━━━━━━━━━━━━━\n\n"
+                f"⏳ Pas encore de candidats\\.\n\n"
+                f"Le système a besoin de :\n"
+                f"  • 3\\+ bulls détectés par wallet\n"
+                f"  • 60%\\+ de win rate\n\n"
+                f"Reviens dans quelques jours\\."
+            )
+            await self._send_reply(msg)
+            return
+
+        lines = [
+            f"🔍 *TOP {len(candidates)} CANDIDATS ALPHA*",
+            f"━━━━━━━━━━━━━━",
+            f"",
+        ]
+
+        for i, c in enumerate(candidates, 1):
+            wallet_short = c["wallet"][:8] + "\\.\\.\\.\\+" + c["wallet"][-4:]
+            lines.append(f"━━━━━━━━━━━━━━")
+            lines.append(f"`{i}\\.` `{wallet_short}`")
+            lines.append(f"  🎯 Bulls hit : `{c['bulls_hit']}`")
+            lines.append(f"  📈 Win rate : `{c['win_rate']:.0f}%`")
+            lines.append(f"  💰 Gain moyen : `\\+{c['avg_gain']:.0f}%`")
+            lines.append(f"  ⭐ Score : `{c['score']:.3f}`")
+            lines.append("")
+
+        lines.append(f"💡 *Fichier :*")
+        lines.append(f"`data/wallet_candidates\\.json`")
+
+        msg = "\n".join(lines)
+        await self._send_reply(msg)
+
+    async def _cmd_optimize(self):
+        """Commande /optimize - Voir stats Auto-Optimizer"""
+        stats = self.auto_optimizer.get_stats()
+        history = self.auto_optimizer.get_history()
+        config = self.auto_optimizer.get_current_config()
+
+        lines = [
+            f"🎯 *AUTO\\-OPTIMIZER*",
+            f"━━━━━━━━━━━━━━",
+            f"",
+            f"📊 *Statistiques :*",
+            f"  Optimisations : `{stats['total_optimizations']}`",
+            f"  Historique : `{stats['history_count']}` entrées",
+            f"",
+            f"⚙️ *Config actuelle :*",
+        ]
+
+        for param, value in config.items():
+            lines.append(
+                f"  {self._esc(param)} : `{value}`"
+            )
+
+        lines.append("")
+
+        if history:
+            lines.append(f"📜 *5 dernières optimisations :*")
+            lines.append("")
+            for opt in history[-5:]:
+                try:
+                    from datetime import datetime
+                    dt = datetime.fromisoformat(opt["timestamp"])
+                    date_str = dt.strftime("%d/%m %H:%M")
+                except Exception:
+                    date_str = "?"
+
+                changes = len([
+                    s for s in opt.get("suggestions", [])
+                    if s.get("param") != "info"
+                ])
+                lines.append(
+                    f"  `{date_str}` : {changes} changement\\(s\\)"
+                )
+        else:
+            lines.append(f"⏳ Aucune optimisation encore\\.")
+            lines.append(f"Prochaine analyse dans 6h\\.")
+
+        msg = "\n".join(lines)
+        await self._send_reply(msg)
+
     async def _cmd_pause(self):
         self.paused = True
         await self._send_reply(
@@ -1393,7 +1545,7 @@ class MemeSniper:
 
     async def _cmd_help(self):
         msg = (
-            "🤖 *MemeSniper v12\\.7 FINAL*\n"
+            "🤖 *MemeSniper v12\\.9 FINAL*\n"
             "━━━━━━━━━━━━━━\n\n"
             "📊 *Info:*\n"
             "/status \\- État du bot\n"
@@ -1405,6 +1557,11 @@ class MemeSniper:
             "/positions \\- Voir positions\n"
             "/watch `<mint>` \\- Surveiller token\n"
             "/close `<symbol>` \\- Fermer position\n\n"
+            "🔍 *Wallet Discovery 🆕*\n"
+            "/wallets \\- Stats découverte\n"
+            "/candidates \\- Top candidats alpha\n\n"
+            "🎯 *Auto\\-Optimizer 🆕*\n"
+            "/optimize \\- Voir optimisations\n\n"
             "🔍 *Analyse:*\n"
             "/check `<mint>` \\- Safety check\n\n"
             "🧠 *ML \\(apprentissage\\):*\n"
@@ -1608,7 +1765,6 @@ class MemeSniper:
                 ],
             ]
 
-            # v12.7 : Tenter d'envoyer avec chart
             chart_url = None
             try:
                 chart_url = await self.chart_screenshot.get_chart_url(mint)
@@ -1647,7 +1803,7 @@ class MemeSniper:
     # ═══════════════════════════════════════════════════
 
     async def handle_sell_signal(self, signal_data: dict):
-        """Callback SellSignalGenerator - Envoie alerte de vente"""
+        """Callback SellSignalGenerator"""
         try:
             symbol       = signal_data["symbol"]
             mint         = signal_data["mint"]
@@ -1890,7 +2046,8 @@ class MemeSniper:
                 f"| src:{source}"
             )
 
-            min_score = MIN_SCORE
+            # v12.9 : Utilise le score optimisé par AutoOptimizer
+            min_score = self.auto_optimizer.get_min_score()
 
             if source.startswith("twitter_"):
                 if "TIER1" in source:
@@ -1934,7 +2091,6 @@ class MemeSniper:
                 )
                 return
 
-            # v12.7 : Récupérer le chart pour l'envoyer avec l'alerte
             chart_url = None
             try:
                 chart_url = await self.chart_screenshot.get_chart_url(address)
@@ -1960,7 +2116,6 @@ class MemeSniper:
                         decision["amount_eur"],
                     )
 
-                    # ═══ SELL SIGNAL v12.6 ═══
                     try:
                         sell_data = await self.sell_generator._fetch_token_data(address)
                         if sell_data and sell_data.get("price", 0) > 0:
@@ -2088,6 +2243,20 @@ async def cleanup_all(bot: MemeSniper):
             logger.info("[CLEANUP] ✅ ChartScreenshot arrêté")
     except Exception as e:
         logger.error(f"[CLEANUP] chart_screenshot.stop() : {e}")
+
+    try:
+        if bot.wallet_discovery:
+            await bot.wallet_discovery.stop()
+            logger.info("[CLEANUP] ✅ WalletDiscovery arrêté")
+    except Exception as e:
+        logger.error(f"[CLEANUP] wallet_discovery.stop() : {e}")
+
+    try:
+        if bot.auto_optimizer:
+            await bot.auto_optimizer.stop()
+            logger.info("[CLEANUP] ✅ AutoOptimizer arrêté")
+    except Exception as e:
+        logger.error(f"[CLEANUP] auto_optimizer.stop() : {e}")
 
     try:
         if bot.dashboard:
