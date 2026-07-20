@@ -43,7 +43,7 @@ COPY_TRADING_THRESHOLDS = {
 MAX_CUMULATIVE_BONUS = 5.0
 
 
-def get_wallet_tier(wallet_address: str):
+def get_wallet_tier(wallet_address: str) -> str | None:
     """Retourne le tier d'un wallet ou None."""
     for tier, wallets in ALPHA_WALLETS.items():
         if wallet_address in wallets:
@@ -51,10 +51,10 @@ def get_wallet_tier(wallet_address: str):
     return None
 
 
-def get_wallet_bonus(wallet_addresses):
+def get_wallet_bonus(wallet_addresses) -> tuple[float, str]:
     """
-    FIX v10.2 : accepte str OU list.
-    Retourne toujours (bonus: float, message: str).
+    Accepte str OU list.
+    Retourne (bonus: float, message: str).
     """
     if isinstance(wallet_addresses, str):
         wallet_addresses = [wallet_addresses]
@@ -76,7 +76,7 @@ def get_wallet_bonus(wallet_addresses):
     total_bonus = sum(TIER_BONUS.get(t, 0.0) for t in tiers_found)
     total_bonus = min(total_bonus, MAX_CUMULATIVE_BONUS)
 
-    count = len(wallet_addresses)
+    count    = len(wallet_addresses)
     top_tier = tiers_found[0]
 
     if count >= 3:
@@ -89,7 +89,7 @@ def get_wallet_bonus(wallet_addresses):
     return round(total_bonus, 1), message
 
 
-def get_all_wallets():
+def get_all_wallets() -> list:
     """Retourne tous les wallets toutes tiers confondus."""
     all_wallets = []
     for wallets in ALPHA_WALLETS.values():
@@ -109,12 +109,7 @@ def get_wallet_info(wallet_address: str) -> dict:
     """Retourne toutes les infos d'un wallet."""
     tier = get_wallet_tier(wallet_address)
     if tier is None:
-        return {
-            "known":     False,
-            "tier":      None,
-            "bonus":     0.0,
-            "threshold": 7.5,
-        }
+        return {"known": False, "tier": None, "bonus": 0.0, "threshold": 7.5}
     return {
         "known":     True,
         "tier":      tier,

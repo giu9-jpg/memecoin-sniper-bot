@@ -1,8 +1,8 @@
-# modules/csv_exporter.py v1.1
-"""
-CSV Exporter + Rapports quotidiens
-Fix v1.1 : Lecture correcte des statistiques du bot
-"""
+# modules/csv_exporter.py — v1.1 CORRIGÉ
+# FIX AUDIT :
+# - Lecture correcte des stats via getattr (bot peut être None)
+# - Protection si portfolio_tracker.trades_history vide
+# - _esc() déjà présent ✅
 
 import asyncio
 import csv
@@ -16,7 +16,7 @@ logger = get_logger("csv_exporter")
 
 class CSVExporter:
 
-    EXPORT_DIR = "data/exports"
+    EXPORT_DIR            = "data/exports"
     DAILY_REPORT_INTERVAL = 86400
 
     def __init__(
@@ -37,8 +37,8 @@ class CSVExporter:
         self.ml_scorer         = ml_scorer
         self.wallet_discovery  = wallet_discovery
 
-        self.running = False
-        self.last_daily_report = 0
+        self.running            = False
+        self.last_daily_report  = 0
 
         self.yesterday_snapshot = {
             "alerts_sent":     0,
@@ -49,7 +49,7 @@ class CSVExporter:
         }
 
         self.total_reports_sent = 0
-        self.total_exports = 0
+        self.total_exports      = 0
 
         os.makedirs(self.EXPORT_DIR, exist_ok=True)
 
@@ -63,7 +63,7 @@ class CSVExporter:
         logger.info("📊 CSVExporter arrêté")
 
     async def _daily_report_loop(self):
-        await asyncio.sleep(3600)  # Attend 1h pour le 1er rapport
+        await asyncio.sleep(3600)
         while self.running:
             try:
                 await self._generate_daily_report()
@@ -79,22 +79,21 @@ class CSVExporter:
 
             bot_stats = self._get_bot_stats()
 
-            delta_alerts   = bot_stats.get("alerts_sent", 0) - self.yesterday_snapshot["alerts_sent"]
+            delta_alerts   = bot_stats.get("alerts_sent",     0) - self.yesterday_snapshot["alerts_sent"]
             delta_analyzed = bot_stats.get("tokens_analyzed", 0) - self.yesterday_snapshot["tokens_analyzed"]
             delta_momentum = bot_stats.get("momentum_alerts", 0) - self.yesterday_snapshot["momentum_alerts"]
-            delta_sells    = bot_stats.get("sell_alerts", 0) - self.yesterday_snapshot["sell_alerts"]
+            delta_sells    = bot_stats.get("sell_alerts",     0) - self.yesterday_snapshot["sell_alerts"]
 
-            bulls_data = self.bull_analyzer.get_stats(days=1) if self.bull_analyzer else {}
-            ml_data = self.ml_scorer.get_stats() if self.ml_scorer else {}
-            
+            bulls_data    = self.bull_analyzer.get_stats(days=1) if self.bull_analyzer else {}
+            ml_data       = self.ml_scorer.get_stats()            if self.ml_scorer     else {}
             portfolio_data = {}
-            pnl_data = {}
+            pnl_data       = {}
+
             if self.portfolio_tracker:
                 portfolio_data = self.portfolio_tracker.get_portfolio_summary()
-                pnl_data = self.portfolio_tracker.get_pnl_by_period()
+                pnl_data       = self.portfolio_tracker.get_pnl_by_period()
 
-            wd_data = self.wallet_discovery.get_stats() if self.wallet_discovery else {}
-
+            wd_data  = self.wallet_discovery.get_stats() if self.wallet_discovery else {}
             date_str = datetime.now(timezone.utc).strftime("%d/%m/%Y")
 
             lines = [
@@ -116,18 +115,24 @@ class CSVExporter:
                 lines.append(f"  Gain moyen : `\\+{bulls_data.get('avg_gain', 0):.0f}%`")
                 if bulls_data.get("top_5"):
                     top1 = bulls_data["top_5"][0]
-                    lines.append(f"  🏆 Meilleur : ${self._esc(top1['symbol'])} \\+{top1['change_24h']:.0f}%")
+                    lines.append(
+                        f"  🏆 Meilleur : ${self._esc(top1['symbol'])} "
+                        f"\\+{top1['change_24h']:.0f}%"
+                    )
                 lines.append("")
 
             if portfolio_data.get("total_trades", 0) > 0:
-                pnl_day = pnl_data.get("pnl_day", 0)
+                pnl_day   = pnl_data.get("pnl_day", 0)
                 pnl_emoji = "📈" if pnl_day >= 0 else "📉"
-                pnl_sign = "\\+" if pnl_day >= 0 else ""
+                pnl_sign  = "\\+" if pnl_day >= 0 else ""
 
                 lines.append("💼 *PORTFOLIO :*")
                 lines.append(f"  {pnl_emoji} PnL 24h : `{pnl_sign}{pnl_day:.2f}€`")
                 lines.append(f"  Pos ouvertes : `{portfolio_data['open_positions']}`")
-                lines.append(f"  W/L : `{pnl_data.get('wins_day', 0)}`/`{pnl_data.get('losses_day', 0)}`")
+                lines.append(
+                    f"  W/L : `{pnl_data.get('wins_day', 0)}`/"
+                    f"`{pnl_data.get('losses_day', 0)}`"
+                )
                 lines.append("")
 
             if ml_data.get("trades", 0) > 0:
@@ -148,31 +153,34 @@ class CSVExporter:
             lines.append("`data/exports/`")
             lines.append(f"⏰ Prochain rapport dans 24h")
 
-            msg = "\n".join(lines)
-            await self.alert_sender._send_telegram(msg)
+            await self.alert_sender._send_telegram("\n".join(lines))
 
             self.yesterday_snapshot = {
-                "alerts_sent":     bot_stats.get("alerts_sent", 0),
+                "alerts_sent":     bot_stats.get("alerts_sent",     0),
                 "tokens_analyzed": bot_stats.get("tokens_analyzed", 0),
                 "momentum_alerts": bot_stats.get("momentum_alerts", 0),
-                "sell_alerts":     bot_stats.get("sell_alerts", 0),
-                "bulls_detected":  bulls_data.get("total", 0),
+                "sell_alerts":     bot_stats.get("sell_alerts",     0),
+                "bulls_detected":  bulls_data.get("total",          0),
             }
 
             self.total_reports_sent += 1
-            self.last_daily_report = time.time()
+            self.last_daily_report   = time.time()
 
         except Exception as e:
             logger.error(f"Generate daily report error : {e}", exc_info=True)
 
     def _get_bot_stats(self) -> dict:
+        """
+        FIX AUDIT : utilise getattr avec default 0
+        pour éviter crash si attribut manquant sur bot.
+        """
         if not self.bot:
             return {}
         return {
-            "alerts_sent": getattr(self.bot, "alerts_sent", 0),
-            "tokens_analyzed": getattr(self.bot, "tokens_analyzed", 0),
-            "momentum_alerts": getattr(self.bot, "momentum_alerts", 0),
-            "sell_alerts": getattr(self.bot, "sell_alerts_sent", 0),
+            "alerts_sent":     getattr(self.bot, "alerts_sent",      0),
+            "tokens_analyzed": getattr(self.bot, "tokens_analyzed",  0),
+            "momentum_alerts": getattr(self.bot, "momentum_alerts",  0),
+            "sell_alerts":     getattr(self.bot, "sell_alerts_sent", 0),
         }
 
     async def _export_all_csv(self):
@@ -187,14 +195,18 @@ class CSVExporter:
         except Exception as e:
             logger.error(f"Export all CSV error : {e}")
 
-    async def export_bulls_csv(self, date_str: str = None) -> str:
+    async def export_bulls_csv(self, date_str: str = None) -> str | None:
         try:
             if not self.bull_analyzer or not self.bull_analyzer.bulls:
                 return None
             date_str = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
             filepath = os.path.join(self.EXPORT_DIR, f"bulls_{date_str}.csv")
             with open(filepath, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=list(self.bull_analyzer.bulls[0].keys()), extrasaction="ignore")
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=list(self.bull_analyzer.bulls[0].keys()),
+                    extrasaction="ignore",
+                )
                 writer.writeheader()
                 for bull in self.bull_analyzer.bulls:
                     writer.writerow(bull)
@@ -202,14 +214,21 @@ class CSVExporter:
         except Exception:
             return None
 
-    async def export_trades_csv(self, date_str: str = None) -> str:
+    async def export_trades_csv(self, date_str: str = None) -> str | None:
         try:
-            if not self.portfolio_tracker or not self.portfolio_tracker.trades_history:
+            if (
+                not self.portfolio_tracker
+                or not self.portfolio_tracker.trades_history
+            ):
                 return None
             date_str = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
             filepath = os.path.join(self.EXPORT_DIR, f"trades_{date_str}.csv")
             with open(filepath, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=list(self.portfolio_tracker.trades_history[0].keys()), extrasaction="ignore")
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=list(self.portfolio_tracker.trades_history[0].keys()),
+                    extrasaction="ignore",
+                )
                 writer.writeheader()
                 for trade in self.portfolio_tracker.trades_history:
                     writer.writerow(trade)
@@ -217,7 +236,7 @@ class CSVExporter:
         except Exception:
             return None
 
-    async def export_portfolio_csv(self, date_str: str = None) -> str:
+    async def export_portfolio_csv(self, date_str: str = None) -> str | None:
         try:
             if not self.portfolio_tracker:
                 return None
@@ -227,7 +246,11 @@ class CSVExporter:
             date_str = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
             filepath = os.path.join(self.EXPORT_DIR, f"portfolio_{date_str}.csv")
             with open(filepath, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=list(positions[0].keys()), extrasaction="ignore")
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=list(positions[0].keys()),
+                    extrasaction="ignore",
+                )
                 writer.writeheader()
                 for pos in positions:
                     writer.writerow(pos)
@@ -235,17 +258,21 @@ class CSVExporter:
         except Exception:
             return None
 
-    async def export_ml_csv(self, date_str: str = None) -> str:
+    async def export_ml_csv(self, date_str: str = None) -> str | None:
         try:
             if not self.ml_scorer:
                 return None
-            trades = getattr(self.ml_scorer, "trades_history", None)
+            trades = getattr(self.ml_scorer, "data", {}).get("trades", [])
             if not trades:
                 return None
             date_str = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
             filepath = os.path.join(self.EXPORT_DIR, f"ml_data_{date_str}.csv")
             with open(filepath, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=list(trades[0].keys()), extrasaction="ignore")
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=list(trades[0].keys()),
+                    extrasaction="ignore",
+                )
                 writer.writeheader()
                 for t in trades:
                     writer.writerow(t)
@@ -253,7 +280,7 @@ class CSVExporter:
         except Exception:
             return None
 
-    async def export_candidates_csv(self, date_str: str = None) -> str:
+    async def export_candidates_csv(self, date_str: str = None) -> str | None:
         try:
             if not self.wallet_discovery:
                 return None
@@ -261,9 +288,15 @@ class CSVExporter:
             if not candidates:
                 return None
             date_str = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            filepath = os.path.join(self.EXPORT_DIR, f"wallet_candidates_{date_str}.csv")
+            filepath = os.path.join(
+                self.EXPORT_DIR, f"wallet_candidates_{date_str}.csv"
+            )
             with open(filepath, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=list(candidates[0].keys()), extrasaction="ignore")
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=list(candidates[0].keys()),
+                    extrasaction="ignore",
+                )
                 writer.writeheader()
                 for c in candidates:
                     writer.writerow(c)
@@ -273,7 +306,10 @@ class CSVExporter:
 
     def _esc(self, text: str) -> str:
         special = r'_*[]()~`>#+-=|{}.!'
-        return "".join(f"\\{c}" if c in special else c for c in str(text))
+        return "".join(
+            f"\\{c}" if c in special else c
+            for c in str(text)
+        )
 
     async def force_daily_report(self):
         await self._generate_daily_report()
@@ -281,7 +317,7 @@ class CSVExporter:
 
     def get_stats(self) -> dict:
         return {
-            "reports_sent":       self.total_reports_sent,
-            "total_exports":      self.total_exports,
-            "last_report":        self.last_daily_report,
+            "reports_sent":  self.total_reports_sent,
+            "total_exports": self.total_exports,
+            "last_report":   self.last_daily_report,
         }

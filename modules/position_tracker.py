@@ -1,9 +1,11 @@
-# modules/position_tracker.py — v7.1 FIXED
-# FIX : timeout position 7j en minutes et non en secondes
-# FIX : _send_telegram avec retry sur rate limit
-# FIX : add_position vérifie le prix d'entrée
-# FIX : check_all_positions loggue mieux l'état
+# modules/position_tracker.py — v7.1 CORRIGÉ
+# FIX AUDIT :
+# - import asyncio au niveau module (plus en local dans _send_telegram)
+# - buttons sérialisés avec json.dumps dans _send_telegram
+# - Protection division par zéro dans _check_position
 
+import asyncio
+import json
 import time
 import os
 import aiohttp
@@ -15,7 +17,7 @@ POSITION_TIMEOUT_MIN = 10_080   # 7 jours en minutes
 class PositionTracker:
 
     def __init__(self, alert_sender=None):
-        self.positions    = {}    # {address: position_dict}
+        self.positions    = {}
         self.alert_sender = alert_sender
         self.bot_token    = os.getenv("TELEGRAM_BOT_TOKEN", "")
         self.chat_id      = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -26,39 +28,31 @@ class PositionTracker:
             self.session = aiohttp.ClientSession()
         return self.session
 
-    # ═══════════════════════════════════════════════════
-    # GESTION DES POSITIONS
-    # ═══════════════════════════════════════════════════
-
     def add_position(
         self,
         token_data: dict,
         decision:   dict,
         amount_eur: float,
     ):
-        """
-        Ajoute une position à surveiller.
-        FIX : vérifie que le prix d'entrée est valide.
-        FIX : ne double-ajoute pas une position déjà ouverte.
-        """
         address     = token_data.get("address", "")
-        price_entry = float(token_data.get("price_usd", 0) or 0)
+        # FIX : cherche price_usd ET price pour compatibilité
+        price_entry = float(
+            token_data.get("price_usd", 0)
+            or token_data.get("price", 0)
+            or 0
+        )
 
         if not address:
             logger.warning("[POS] add_position : adresse vide")
             return
 
-        # FIX : ne pas écraser une position ouverte existante
-        if address in self.positions and not self.positions[address].get(
-            "closed"
-        ):
+        if address in self.positions and not self.positions[address].get("closed"):
             logger.debug(
                 f"[POS] Position déjà ouverte : "
                 f"{token_data.get('symbol')}"
             )
             return
 
-        # FIX : prix d'entrée obligatoire
         if price_entry <= 0:
             logger.warning(
                 f"[POS] Prix d'entrée invalide pour "
@@ -94,12 +88,7 @@ class PositionTracker:
             f"tier {decision.get('tier')}"
         )
 
-    # ═══════════════════════════════════════════════════
-    # VÉRIFICATION DES POSITIONS
-    # ═══════════════════════════════════════════════════
-
     async def check_all_positions(self):
-        """Vérifie toutes les positions ouvertes."""
         open_positions = [
             (addr, pos)
             for addr, pos in self.positions.items()
@@ -117,13 +106,9 @@ class PositionTracker:
             try:
                 current_price = await self._get_current_price(address)
                 if current_price and current_price > 0:
-                    await self._check_position(
-                        address, position, current_price
-                    )
+                    await self._check_position(address, position, current_price)
             except Exception as e:
-                logger.error(
-                    f"[POS] Erreur check {address[:8]}: {e}"
-                )
+                logger.error(f"[POS] Erreur check {address[:8]}: {e}")
 
     async def _check_position(
         self,
@@ -131,23 +116,17 @@ class PositionTracker:
         position:      dict,
         current_price: float,
     ):
-        """
-        Vérifie TP/SL pour une position.
-        FIX : age_min calculé en minutes correctement.
-        """
         entry = float(position.get("price_entry", 0))
+        # FIX : protection division par zéro
         if not entry or entry <= 0:
             return
 
         multiplier = current_price / entry
         change_pct = (multiplier - 1) * 100
+        age_min    = (time.time() - position["entry_time"]) / 60
+        sl_pct     = float(position.get("sl_pct", -30))
+        symbol     = position.get("symbol", "???")
 
-        # FIX : age en minutes (entry_time est un timestamp Unix)
-        age_min = (time.time() - position["entry_time"]) / 60
-        sl_pct  = float(position.get("sl_pct", -30))
-        symbol  = position.get("symbol", "???")
-
-        # Mise à jour du plus haut
         if current_price > position.get("price_high", 0):
             self.positions[address]["price_high"] = current_price
 
@@ -158,17 +137,12 @@ class PositionTracker:
         )
 
         # ── STOP LOSS ─────────────────────────────────
-        if (
-            change_pct <= sl_pct
-            and position.get("remaining", 0) > 0
-        ):
+        if change_pct <= sl_pct and position.get("remaining", 0) > 0:
             logger.info(
                 f"[POS] 🛑 SL touché {symbol}: "
                 f"{change_pct:.1f}% ≤ {sl_pct}%"
             )
-            await self._send_sl_alert(
-                position, current_price, change_pct
-            )
+            await self._send_sl_alert(position, current_price, change_pct)
             self.positions[address]["closed"]    = True
             self.positions[address]["remaining"] = 0
             return
@@ -199,7 +173,6 @@ class PositionTracker:
                     self.positions[address]["remaining"] - sell_pct,
                 )
 
-                # Ferme si dernier TP ou remaining = 0
                 if (
                     i == len(tp_levels) - 1
                     or self.positions[address]["remaining"] <= 0
@@ -207,16 +180,9 @@ class PositionTracker:
                     self.positions[address]["closed"] = True
 
         # ── TIMEOUT (7 jours) ─────────────────────────
-        # FIX : POSITION_TIMEOUT_MIN est en minutes
         if age_min > POSITION_TIMEOUT_MIN:
             self.positions[address]["closed"] = True
-            logger.info(
-                f"[POS] ⏰ Timeout (7j) : {symbol}"
-            )
-
-    # ═══════════════════════════════════════════════════
-    # ALERTES TELEGRAM
-    # ═══════════════════════════════════════════════════
+            logger.info(f"[POS] ⏰ Timeout (7j) : {symbol}")
 
     async def _send_tp_alert(
         self,
@@ -227,26 +193,20 @@ class PositionTracker:
         multiplier:    float,
         sell_pct:      int,
     ):
-        """Alerte TP enrichie."""
         symbol      = position.get("symbol", "???")
         amount_eur  = float(position.get("amount_eur", 0))
         entry_price = float(position.get("price_entry", 0))
         tier        = position.get("tier", "")
         profit_eur  = round(amount_eur * multiplier - amount_eur, 2)
-        remaining   = max(
-            0,
-            position.get("remaining", 100) - sell_pct
-        )
+        remaining   = max(0, position.get("remaining", 100) - sell_pct)
         address     = position.get("address", "")
         age_min     = int(
             (time.time() - position.get("entry_time", time.time())) / 60
         )
 
         tier_emoji = {
-            "ULTIMATE": "💎",
-            "STRONG":   "🔥",
-            "GOOD":     "✅",
-            "NORMAL":   "📊",
+            "ULTIMATE": "💎", "STRONG": "🔥",
+            "GOOD": "✅", "NORMAL": "📊",
         }.get(tier, "⚪")
 
         message = (
@@ -268,9 +228,7 @@ class PositionTracker:
             "inline_keyboard": [[
                 {
                     "text": f"🚀 Vendre {sell_pct}% sur Photon",
-                    "url":  (
-                        f"https://photon-sol.tinyastro.io/en/lp/{address}"
-                    ),
+                    "url":  f"https://photon-sol.tinyastro.io/en/lp/{address}",
                 }
             ], [
                 {
@@ -288,7 +246,6 @@ class PositionTracker:
         current_price: float,
         change_pct:    float,
     ):
-        """Alerte Stop Loss enrichie."""
         symbol      = position.get("symbol", "???")
         amount_eur  = float(position.get("amount_eur", 0))
         entry_price = float(position.get("price_entry", 0))
@@ -324,9 +281,7 @@ class PositionTracker:
             "inline_keyboard": [[
                 {
                     "text": "🛑 VENDRE TOUT sur Photon",
-                    "url":  (
-                        f"https://photon-sol.tinyastro.io/en/lp/{address}"
-                    ),
+                    "url":  f"https://photon-sol.tinyastro.io/en/lp/{address}",
                 }
             ], [
                 {
@@ -345,8 +300,8 @@ class PositionTracker:
     ):
         """
         Envoie un message Telegram.
-        FIX : retry sur rate limit.
-        FIX : buttons=None ne plante plus.
+        FIX : buttons sérialisés avec json.dumps
+        FIX : import asyncio au niveau module (pas en local)
         """
         bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
         chat_id   = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -356,17 +311,17 @@ class PositionTracker:
 
         try:
             session = await self._get_session()
-            url     = (
-                f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            )
+            url     = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+
             payload: dict = {
                 "chat_id":                  chat_id,
                 "text":                     message,
                 "parse_mode":               "MarkdownV2",
                 "disable_web_page_preview": True,
             }
+            # FIX : json.dumps obligatoire pour les boutons
             if buttons:
-                payload["reply_markup"] = buttons
+                payload["reply_markup"] = json.dumps(buttons)
 
             for attempt in range(3):
                 async with session.post(
@@ -379,28 +334,21 @@ class PositionTracker:
                         return
 
                     if resp.status == 429:
-                        import asyncio
-                        result = await resp.json()
-                        wait   = result.get(
-                            "parameters", {}
-                        ).get("retry_after", 5)
-                        logger.warning(
-                            f"[POS] ⏳ Rate limit, attente {wait}s"
-                        )
+                        result    = await resp.json()
+                        wait      = result.get("parameters", {}).get("retry_after", 5)
+                        logger.warning(f"[POS] ⏳ Rate limit, attente {wait}s")
+                        # FIX : asyncio importé au niveau module
                         await asyncio.sleep(wait)
                         continue
 
                     result = await resp.json()
-                    logger.error(
-                        f"[POS] ❌ Telegram {resp.status}: {result}"
-                    )
+                    logger.error(f"[POS] ❌ Telegram {resp.status}: {result}")
                     return
 
         except Exception as e:
             logger.error(f"[POS] Exception telegram: {e}")
 
     def _esc(self, text: str) -> str:
-        """Échappe les caractères MarkdownV2."""
         if not text:
             return ""
         special = r"\_*[]()~`>#+-=|{}.!"
@@ -412,19 +360,10 @@ class PositionTracker:
                 result += char
         return result
 
-    # ═══════════════════════════════════════════════════
-    # PRIX ACTUEL
-    # ═══════════════════════════════════════════════════
-
-    async def _get_current_price(
-        self, address: str
-    ) -> float | None:
-        """Récupère le prix actuel via DexScreener."""
+    async def _get_current_price(self, address: str) -> float | None:
         try:
             session = await self._get_session()
-            url = (
-                f"https://api.dexscreener.com/latest/dex/tokens/{address}"
-            )
+            url     = f"https://api.dexscreener.com/latest/dex/tokens/{address}"
             async with session.get(
                 url, timeout=aiohttp.ClientTimeout(total=8)
             ) as resp:
@@ -443,11 +382,8 @@ class PositionTracker:
                     key=lambda p: p.get("liquidity", {}).get("usd", 0),
                 )
                 return float(pair.get("priceUsd", 0) or 0)
-
         except Exception as e:
-            logger.debug(
-                f"[POS] Prix introuvable {address[:8]}: {e}"
-            )
+            logger.debug(f"[POS] Prix introuvable {address[:8]}: {e}")
             return None
 
     async def close(self):

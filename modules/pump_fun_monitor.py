@@ -1,5 +1,5 @@
-# modules/pump_fun_monitor.py — v2.2
-# Polling DexScreener (backup du WebSocket)
+# modules/pump_fun_monitor.py — v2.3 FIXED FINAL
+# FIX : suppression de la classe SafetyChecker vide en fin de fichier
 
 import aiohttp
 import asyncio
@@ -26,18 +26,13 @@ class PumpFunMonitor:
             self.session = aiohttp.ClientSession()
         return self.session
 
-    # ── MÉTHODE PRINCIPALE ───────────────────────────────
     async def get_new_tokens(self) -> list:
-        """
-        Récupère les nouveaux tokens Solana via DexScreener.
-        Retourne une liste de tokens non encore vus.
-        """
+        """Récupère les nouveaux tokens Solana via DexScreener."""
         try:
             tokens = await self._fetch_new_tokens()
             if not tokens:
                 return []
 
-            # Filtre les tokens déjà vus
             new_tokens = []
             for token in tokens:
                 address = (
@@ -55,7 +50,6 @@ class PumpFunMonitor:
                 self.seen_tokens.add(address)
                 new_tokens.append(token)
 
-            # Nettoyage mémoire
             if len(self.seen_tokens) > 5000:
                 self.seen_tokens = set(
                     list(self.seen_tokens)[-2000:]
@@ -72,26 +66,27 @@ class PumpFunMonitor:
             logger.error(f"[POLLING] Erreur get_new_tokens: {e}")
             return []
 
-    # ── FETCH DEXSCREENER ────────────────────────────────
     async def _fetch_new_tokens(self) -> list:
         """Récupère les tokens récents sur DexScreener."""
         session = await self._get_session()
         tokens  = []
 
-        # Source 1 — Nouveaux profils de tokens
+        # Source 1 : Nouveaux profils de tokens
         try:
             async with session.get(
                 DEXSCREENER_NEW,
-                timeout=aiohttp.ClientTimeout(total=10)
+                timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     if isinstance(data, list):
                         for item in data:
                             addr = item.get("tokenAddress", "")
-                            if (addr
-                                    and not addr.startswith("0x")
-                                    and item.get("chainId") == "solana"):
+                            if (
+                                addr
+                                and not addr.startswith("0x")
+                                and item.get("chainId") == "solana"
+                            ):
                                 tokens.append({
                                     "tokenAddress": addr,
                                     "symbol": item.get("symbol", "???"),
@@ -100,15 +95,14 @@ class PumpFunMonitor:
         except Exception as e:
             logger.debug(f"[POLLING] Source 1 erreur: {e}")
 
-        # Source 2 — Trending Solana
+        # Source 2 : Trending Solana
         try:
             url = (
                 "https://api.dexscreener.com/latest/dex/tokens/"
                 "So11111111111111111111111111111111111111112"
             )
             async with session.get(
-                url,
-                timeout=aiohttp.ClientTimeout(total=10)
+                url, timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
                 if resp.status == 200:
                     data  = await resp.json()
@@ -117,8 +111,7 @@ class PumpFunMonitor:
                         if pair.get("chainId") != "solana":
                             continue
                         addr = (
-                            pair.get("baseToken", {})
-                                .get("address", "")
+                            pair.get("baseToken", {}).get("address", "")
                         )
                         if addr and not addr.startswith("0x"):
                             tokens.append({
@@ -135,7 +128,10 @@ class PumpFunMonitor:
 
         return tokens
 
-    # ── COMPATIBILITÉ ANCIEN CODE ─────────────────────────
     def get_trending_tokens(self) -> list:
         """Compatibilité avec l'ancien code synchrone."""
         return []
+
+    async def close(self):
+        if self.session and not self.session.closed:
+            await self.session.close()

@@ -1,53 +1,50 @@
-# utils/logger.py — v2.0 FIXED
-# FIX : rotation des logs pour éviter fichiers géants
-# FIX : format timestamp ISO
-# FIX : niveau DEBUG configurable via .env
-# FIX : encoding UTF-8 explicite
+# utils/logger.py — v2.0
+# ═══════════════════════════════════════════════
+# Rotation des logs (10MB bot.log, 5MB errors.log)
+# Format timestamp ISO
+# Niveau DEBUG configurable via LOG_LEVEL dans .env
+# get_logger() pour les modules + logger global
 
 import logging
 import os
 from logging.handlers import RotatingFileHandler
 
-# Dossier logs
 os.makedirs("logs", exist_ok=True)
 
-# Niveau de log configurable
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LEVEL     = getattr(logging, LOG_LEVEL, logging.INFO)
 
 
 def _build_logger() -> logging.Logger:
     log = logging.getLogger("MemeSniper")
-    log.setLevel(logging.DEBUG)   # Capte tout, filtre dans les handlers
+    log.setLevel(logging.DEBUG)
 
     if log.handlers:
-        return log   # Déjà configuré
+        return log
 
-    # ── Format ────────────────────────────────────────
     fmt = logging.Formatter(
-        fmt="%(asctime)s | %(levelname)-8s | %(message)s",
+        fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # ── Console ───────────────────────────────────────
+    # Console
     console = logging.StreamHandler()
     console.setLevel(LEVEL)
     console.setFormatter(fmt)
     log.addHandler(console)
 
-    # ── Fichier avec rotation ──────────────────────────
-    # FIX : RotatingFileHandler évite les fichiers de 10Go
+    # Fichier principal avec rotation
     file_handler = RotatingFileHandler(
         filename="logs/bot.log",
-        maxBytes=10 * 1024 * 1024,   # 10 MB par fichier
-        backupCount=5,               # Garde 5 fichiers max
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
         encoding="utf-8",
     )
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(fmt)
     log.addHandler(file_handler)
 
-    # ── Fichier erreurs uniquement ─────────────────────
+    # Fichier erreurs uniquement
     error_handler = RotatingFileHandler(
         filename="logs/errors.log",
         maxBytes=5 * 1024 * 1024,
@@ -61,26 +58,19 @@ def _build_logger() -> logging.Logger:
     return log
 
 
+# Instance globale
 logger = _build_logger()
 
 
-
-# ════════════════════════════════════════
-# COMPATIBILITÉ v12.0
-# Ajout: fonction get_logger() pour les nouveaux modules
-# ════════════════════════════════════════
-
 def get_logger(name: str = "MemeSniper") -> logging.Logger:
     """
-    Retourne un logger enfant du logger principal
-    Compatible avec l'ancien logger global
-    
+    Retourne un logger enfant nommé.
+    Utilisé par tous les modules pour avoir des logs identifiés.
+
     Usage:
         from utils.logger import get_logger
-        logger = get_logger("mon_module")
+        logger = get_logger(__name__)
     """
-    if name == "MemeSniper" or not name:
+    if not name or name == "MemeSniper":
         return logger
-    # Créer un sous-logger qui hérite du parent
-    child = logger.getChild(name)
-    return child
+    return logger.getChild(name)

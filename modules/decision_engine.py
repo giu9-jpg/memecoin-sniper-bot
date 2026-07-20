@@ -1,4 +1,5 @@
 # modules/decision_engine.py — v6.2 FIXED
+# ═══════════════════════════════════════════════
 # FIX v6.2 :
 # - MC = 0 accepté si token < 10 min (bonding curve)
 # - Holders < 20 accepté si token < 15 min
@@ -6,8 +7,12 @@
 # - Tier NORMAL abaissé à 7.0 pour plus d'alertes
 # - Tier NORMAL sans smart_count requis
 # - Logs détaillés pour debug
+# FIX AUDIT :
+# - buttons sérialisés correctement dans _send_telegram (via alert_sender)
+# - _ignore() retourne dict complet et cohérent
 
 import time
+import json
 from utils.logger import logger
 
 
@@ -62,7 +67,6 @@ class DecisionEngine:
                 logger.debug(f"[DECISION] Market context error: {e}")
 
         # ── FILTRES ABSOLUS ───────────────────────────
-
         if not address:
             return self._ignore("Adresse vide")
 
@@ -84,30 +88,24 @@ class DecisionEngine:
         if market_cap > 10_000_000:
             return self._ignore(f"MC trop élevé: ${market_cap:,.0f}")
 
-        # ── FILTRE MC = 0 (v6.2 : tolérant pour nouveaux tokens) ──
-        # Les tokens Pump.fun n'ont pas de MC sur DexScreener pendant
-        # les premières minutes (bonding curve)
+        # ── FILTRE MC = 0 (tolérant pour nouveaux tokens) ──
         if market_cap == 0 and age_minutes > 10:
             return self._ignore(
                 f"MC = 0 après {age_minutes:.0f}min (données invalides)"
             )
 
-        # ── FILTRE HOLDERS (v6.2 : tolérant si jeune) ─────
-        # Les nouveaux tokens ont peu de holders au début
+        # ── FILTRE HOLDERS (tolérant si jeune) ─────────
         if holders < 20 and age_minutes > 15:
             return self._ignore(
                 f"Trop peu de holders: {holders} (age: {age_minutes:.0f}min)"
             )
 
-        # ── FILTRE LIQUIDITÉ (v6.2 : tolérant si jeune) ────
-        # Pump.fun n'affiche pas de liquidité sur DexScreener
-        # tant que le token est sur la bonding curve
+        # ── FILTRE LIQUIDITÉ (tolérant si jeune) ────────
         if age_minutes >= 10:
             if liquidity < 3_000:
                 return self._ignore(
                     f"Liquidité trop faible: ${liquidity:.0f} (age: {age_minutes:.0f}min)"
                 )
-        # Si age < 10 min, on laisse passer même sans liquidité visible
 
         # ── ANTI-SPAM ─────────────────────────────────
         if not self._check_antispam(address):
@@ -157,29 +155,19 @@ class DecisionEngine:
         }
 
     # ═══════════════════════════════════════════════════
-    # TIER v6.2 (assoupli pour permettre plus d'alertes)
+    # TIER v6.2
     # ═══════════════════════════════════════════════════
 
     def _get_tier(
         self,
-        score: float,
+        score:       float,
         smart_count: int,
         has_critical: bool,
     ) -> str:
-        """
-        v6.2 : Tiers plus permissifs
-        - NORMAL abaissé de 7.5 à 7.0
-        - NORMAL n'exige plus de smart_count
-        - GOOD ne demande plus 2 signals si score >= 8.5
-        """
         if score >= 9.5 and (smart_count >= 3 or has_critical):
             return "ULTIMATE"
-        if score >= 9.0:
-            return "STRONG"
         if score >= 8.5:
             return "STRONG"
-        if score >= 8.0:
-            return "GOOD"
         if score >= 7.5:
             return "GOOD"
         if score >= 7.0:
@@ -242,13 +230,11 @@ class DecisionEngine:
     def _check_antispam(self, address: str) -> bool:
         now = time.time()
 
-        # Cooldown 30 min par token
         if address in self.alert_history:
             elapsed = now - self.alert_history[address]
             if elapsed < 1800:
                 return False
 
-        # Nettoyage avant check
         self.hourly_alerts = [
             t for t in self.hourly_alerts
             if now - t < 3600

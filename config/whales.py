@@ -1,16 +1,9 @@
 # config/whales.py — v2.0 FIXED
-# FIX : get_active_wallets() et get_whale_by_address() robustes
-# FIX : structure claire avec métadonnées
-
 """
 Whales - v2.0
 Wallets de baleines Solana à surveiller
 """
 
-# ══════════════════════════════════════════
-# LISTE DES BALEINES
-# Structure : {address, label, tier, min_trade_usd, active}
-# ══════════════════════════════════════════
 WHALE_WALLETS = [
     {
         "address":       "7xuqfpLnqpFkkBCNfKzGFBrG3k3T8YBCZ8aN2KoQHmV",
@@ -49,33 +42,21 @@ WHALE_WALLETS = [
     },
 ]
 
-# ── Index par adresse (pour lookup rapide) ────────────
 _ADDRESS_INDEX: dict[str, dict] = {
     w["address"]: w for w in WHALE_WALLETS
 }
 
 
-# ══════════════════════════════════════════
-# HELPERS
-# ══════════════════════════════════════════
-
 def get_active_wallets() -> list:
-    """
-    Retourne les adresses des baleines actives.
-    FIX : filtre uniquement les actives.
-    """
+    """Retourne les adresses des baleines actives."""
     return [
-        w["address"]
-        for w in WHALE_WALLETS
+        w["address"] for w in WHALE_WALLETS
         if w.get("active", True)
     ]
 
 
 def get_whale_by_address(address: str) -> dict | None:
-    """
-    Retourne les infos d'une baleine par adresse.
-    FIX : retourne None si inconnue (pas de KeyError).
-    """
+    """Retourne les infos d'une baleine par adresse."""
     return _ADDRESS_INDEX.get(address)
 
 
@@ -96,18 +77,14 @@ def get_min_trade_usd(address: str) -> float:
 
 
 def add_whale(
-    address:       str,
-    label:         str  = "Unknown Whale",
-    tier:          int  = 3,
+    address: str,
+    label: str = "Unknown Whale",
+    tier: int = 3,
     min_trade_usd: float = 1_000,
 ) -> bool:
-    """
-    Ajoute dynamiquement une baleine à surveiller.
-    Retourne True si ajoutée, False si déjà présente.
-    """
+    """Ajoute dynamiquement une baleine. Retourne True si ajoutée."""
     if address in _ADDRESS_INDEX:
         return False
-
     whale = {
         "address":       address,
         "label":         label,
