@@ -1,8 +1,9 @@
-# main.py — v12.4 FINAL
+# main.py — v12.5 FINAL
 # Bot Sniper Memecoin Solana - Ultimate Edition
 # ═══════════════════════════════════════════════
 # ✅ TokenSafety v1.2 (fix pump.fun timing)
 # ✅ Bull Run Analyzer v1.0 (apprentissage auto)
+# ✅ Backtester v1.0 (simulation historique)  🆕
 # ✅ Copy Trading + Early Detector + Whale Inflow
 # ✅ Momentum Detector v1.2
 # ✅ ML Scorer + Dashboard + Multi-DEX
@@ -38,6 +39,7 @@ from modules.raydium_monitor     import RadyiumMonitor
 from modules.momentum_detector   import MomentumDetector
 from modules.ml_scorer           import MLScorer
 from modules.bull_run_analyzer   import BullRunAnalyzer
+from modules.backtester          import Backtester
 
 from config.alpha_wallets        import (
     ALPHA_WALLETS,
@@ -91,6 +93,9 @@ class MemeSniper:
 
         # ── Bull Run Analyzer v12.4 ───────────────────
         self.bull_analyzer = BullRunAnalyzer()
+
+        # ── Backtester v12.5 ──────────────────────────
+        self.backtester = Backtester(self.bull_analyzer)
 
         self.analyzer = TokenAnalyzer(
             alpha_tracker=self.alpha_tracker,
@@ -191,12 +196,13 @@ class MemeSniper:
 
         ml_stats = self.ml_scorer.get_stats()
 
-        logger.info("🚀 MemeSniper v12.4 FINAL démarré !")
+        logger.info("🚀 MemeSniper v12.5 FINAL démarré !")
         logger.info(f"   Score minimum      : {MIN_SCORE}/10")
         logger.info(f"   Smart Signals      : ACTIVÉS")
         logger.info(f"   Market Context     : ACTIF")
         logger.info(f"   Anti-Rug Safety    : ACTIF (v1.2)")
         logger.info(f"   Bull Analyzer      : ACTIF (v1.0)")
+        logger.info(f"   Backtester         : ACTIF (v1.0)")
         logger.info(
             f"   Alpha Wallets      : ACTIF "
             f"({total_wallets} wallets | "
@@ -714,16 +720,21 @@ class MemeSniper:
             await self._cmd_loss(text[6:].strip())
             return
 
+        if text_lower.startswith("/backtest "):
+            await self._cmd_backtest(text[10:].strip())
+            return
+
         routes = {
-            "/status":  self._cmd_status,
-            "/stats":   self._cmd_stats,
-            "/alertes": self._cmd_alertes,
-            "/mlstats": self._cmd_mlstats,
-            "/bullrun": self._cmd_bullrun,
-            "/pause":   self._cmd_pause,
-            "/resume":  self._cmd_resume,
-            "/help":    self._cmd_help,
-            "/start":   self._cmd_help,
+            "/status":   self._cmd_status,
+            "/stats":    self._cmd_stats,
+            "/alertes":  self._cmd_alertes,
+            "/mlstats":  self._cmd_mlstats,
+            "/bullrun":  self._cmd_bullrun,
+            "/backtest": self._cmd_backtest,
+            "/pause":    self._cmd_pause,
+            "/resume":   self._cmd_resume,
+            "/help":     self._cmd_help,
+            "/start":    self._cmd_help,
         }
 
         handler = routes.get(text_lower)
@@ -775,7 +786,7 @@ class MemeSniper:
             dash_str = self._esc(dash_str)
 
         msg = (
-            f"🤖 *MemeSniper v12\\.4 FINAL*\n"
+            f"🤖 *MemeSniper v12\\.5 FINAL*\n"
             f"━━━━━━━━━━━━━━\n\n"
             f"⏱ Uptime: `{h}h {m}m {s}s`\n"
             f"🔄 État: *{self._esc(pause_str)}*\n"
@@ -784,6 +795,7 @@ class MemeSniper:
             f"🔄 Multi\\-DEX: ✅ Actif\n"
             f"🔥 Momentum: ✅ Actif \\(v1\\.2\\)\n"
             f"🎯 Bull Analyzer: ✅ `{n_bulls}` bulls\n"
+            f"📊 Backtester: ✅ Actif\n"
             f"🧠 ML: {ml_st.get('trades', 0)} trades\n"
             f"{dash_str}\n"
             f"📊 *Activité:*\n"
@@ -1052,6 +1064,135 @@ class MemeSniper:
         msg = "\n".join(lines)
         await self._send_reply(msg)
 
+    async def _cmd_backtest(self, args: str = ""):
+        """
+        Commande /backtest [min_liquidity] [days]
+
+        Exemples :
+          /backtest              → paramètres par défaut (30j)
+          /backtest 1000         → simule avec min_liq $1K
+          /backtest 1000 7       → simule avec min_liq $1K sur 7 jours
+        """
+        parts = args.split() if args else []
+
+        min_liquidity = 5_000
+        days = 30
+
+        try:
+            if len(parts) >= 1:
+                min_liquidity = int(parts[0])
+            if len(parts) >= 2:
+                days = int(parts[1])
+        except ValueError:
+            await self._send_reply(
+                "❌ Usage : `/backtest [min_liquidity] [days]`\n"
+                "Exemple : `/backtest 1000 7`"
+            )
+            return
+
+        configs = [
+            {
+                "name": "Actuel",
+                "min_liquidity": 5_000,
+                "min_volume":    100_000,
+                "min_buy_ratio": 55,
+                "days": days,
+            },
+            {
+                "name": "Custom",
+                "min_liquidity": min_liquidity,
+                "min_volume":    100_000,
+                "min_buy_ratio": 55,
+                "days": days,
+            },
+            {
+                "name": "Aggressif",
+                "min_liquidity": 1_000,
+                "min_volume":    50_000,
+                "min_buy_ratio": 50,
+                "days": days,
+            },
+        ]
+
+        results = self.backtester.compare_configs(configs)
+
+        if results[0].get("total_bulls", 0) == 0:
+            msg = (
+                f"📊 *BACKTEST*\n"
+                f"━━━━━━━━━━━━━━\n\n"
+                f"{self._esc(results[0].get('message', 'Pas de données'))}\n\n"
+                f"⏳ Le BullAnalyzer collecte les bulls\\.\n"
+                f"Reviens dans quelques heures\\."
+            )
+            await self._send_reply(msg)
+            return
+
+        lines = [
+            f"📊 *BACKTEST HISTORIQUE*",
+            f"━━━━━━━━━━━━━━",
+            f"",
+            f"Période : `{days} jours`",
+            f"Bulls totaux : `{results[0]['total_bulls']}`",
+            f"",
+        ]
+
+        for res in results:
+            name = res["name"]
+            params = res.get("params", {})
+            liq = params.get("min_liquidity", 0)
+
+            lines.append(f"━━━━━━━━━━━━━━")
+            lines.append(
+                f"🎯 *{self._esc(name)}* "
+                f"\\(liq ≥ ${liq/1000:.0f}K\\)"
+            )
+            lines.append(
+                f"  Alertes : `{res['would_alert']}` "
+                f"/`{res['total_bulls']}`"
+            )
+            lines.append(
+                f"  Hit rate : `{res['hit_rate']:.1f}%`"
+            )
+            lines.append(
+                f"  Gain moyen : `\\+{res['avg_gain']:.0f}%`"
+            )
+            lines.append("")
+
+        best = results[0]
+        if best.get("top_5"):
+            lines.append(f"━━━━━━━━━━━━━━")
+            lines.append(f"🏆 *TOP 5 CATCHÉS \\(config Actuel\\) :*")
+            for i, b in enumerate(best["top_5"], 1):
+                lines.append(
+                    f"  `{i}\\.` ${self._esc(b['symbol'])} "
+                    f"\\+{b['change_24h']:.0f}%"
+                )
+            lines.append("")
+
+        if best.get("missed_5"):
+            lines.append(f"❌ *TOP 5 RATÉS \\(config Actuel\\) :*")
+            for i, b in enumerate(best["missed_5"], 1):
+                liq = b.get("liquidity", 0)
+                vol = b.get("volume_24h", 0)
+                br  = b.get("buy_ratio_1h", 0)
+
+                if liq < 5_000:
+                    reason = f"liq trop basse \\(${liq/1000:.0f}K\\)"
+                elif vol < 100_000:
+                    reason = f"vol trop bas"
+                elif br < 55:
+                    reason = f"buy ratio {br:.0f}%"
+                else:
+                    reason = "MC trop élevé"
+
+                lines.append(
+                    f"  `{i}\\.` ${self._esc(b['symbol'])} "
+                    f"\\+{b['change_24h']:.0f}% → {reason}"
+                )
+
+        msg = "\n".join(lines)
+        await self._send_reply(msg)
+
     async def _cmd_pause(self):
         self.paused = True
         await self._send_reply(
@@ -1077,13 +1218,14 @@ class MemeSniper:
 
     async def _cmd_help(self):
         msg = (
-            "🤖 *MemeSniper v12\\.4 FINAL*\n"
+            "🤖 *MemeSniper v12\\.5 FINAL*\n"
             "━━━━━━━━━━━━━━\n\n"
             "📊 *Info:*\n"
             "/status \\- État du bot\n"
             "/stats \\- Performance\n"
             "/alertes \\- 10 dernières alertes\n"
-            "/bullrun \\- Analyse des bulls 🆕\n\n"
+            "/bullrun \\- Analyse des bulls\n"
+            "/backtest \\- Simuler réglages 🆕\n\n"
             "🔍 *Analyse:*\n"
             "/check `<mint>` \\- Safety check\n\n"
             "🧠 *ML \\(apprentissage\\):*\n"
