@@ -133,6 +133,7 @@ class MemeSniper:
         )
 
         self.csv_exporter = CSVExporter(
+            bot=self,
             alert_sender=self.alert_sender,
             perf_tracker=self.perf_tracker,
             bull_analyzer=self.bull_analyzer,
