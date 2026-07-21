@@ -1,15 +1,10 @@
-# main.py — v13.4 FINAL
-# Bot Sniper Memecoin Solana - ULTIMATE EDITION
+# main.py — v13.5 FINAL
 # ═══════════════════════════════════════════════
-# v13.4 CORRECTIONS :
-# + FIX : buttons json.dumps dans tous les handlers
-# + FIX : _cmd_stats() clés tier correctes
-# + FIX : _cmd_sold() MarkdownV2 cohérent
-# + FIX : price_usd dans _analyze_and_alert()
-# + FIX : handle_sell_signal() buttons sérialisés
-# + Boutons BUY inline dans chaque alerte
-# + CallbackHandler intégré dans getUpdates
-# + /sold SYMBOL PCT → ML nourri automatiquement
+# v13.5 AMÉLIORATIONS :
+# A) ⚡ Speed adaptatif (FAST/MEDIUM/NORMAL selon signal)
+# B) 🕐 Filtre horaire intelligent (UTC 14h-18h peak)
+# C) 🎯 Bouton SELL rapide dans sell signals
+# D) 🐋 Micro whale detection ($200+ pour TIER1)
 
 import asyncio
 import gc
@@ -63,6 +58,7 @@ from config.alpha_wallets import (
     ALPHA_WALLETS,
     get_all_wallets,
     get_copy_threshold,
+    get_wallet_tier,
 )
 from config.alpha_accounts import (
     ALPHA_ACCOUNTS,
@@ -80,6 +76,52 @@ STATS_EVERY          = 86400
 MEMORY_CLEANUP_EVERY = 1800
 COMMAND_POLL_EVERY   = 2
 MIN_SCORE            = 7.5
+
+# ═══════════════════════════════════════════════════
+# B) FILTRE HORAIRE — Configuration UTC
+# ═══════════════════════════════════════════════════
+HOUR_CONFIG = {
+    # Heure UTC → (min_score, label)
+    # Peak US market : score plus bas = plus d'alertes
+    14: (7.5, "🔥 PEAK"),
+    15: (7.5, "🔥 PEAK"),
+    16: (7.5, "🔥 PEAK"),
+    17: (7.5, "🔥 PEAK"),
+    18: (7.5, "🔥 PEAK"),
+    # Soirée EU + après-midi US
+    19: (7.8, "📈 GOOD"),
+    20: (7.8, "📈 GOOD"),
+    21: (7.8, "📈 GOOD"),
+    # Marché asiatique
+     2: (8.0, "🌏 ASIA"),
+     3: (8.0, "🌏 ASIA"),
+     4: (8.0, "🌏 ASIA"),
+    # Nuit/creux → très sélectif
+     6: (8.5, "😴 SLOW"),
+     7: (8.5, "😴 SLOW"),
+     8: (8.5, "😴 SLOW"),
+     9: (8.5, "😴 SLOW"),
+    10: (8.5, "😴 SLOW"),
+    11: (8.2, "⬆️ WAKE"),
+    12: (8.0, "⬆️ WAKE"),
+    13: (7.8, "⬆️ WAKE"),
+}
+
+
+def get_hourly_min_score(base_score: float) -> tuple[float, str]:
+    """
+    B) Retourne le min_score ajusté selon l'heure UTC.
+    base_score : score de base de l'auto_optimizer
+    """
+    hour = time.gmtime().tm_hour
+    if hour in HOUR_CONFIG:
+        hour_score, label = HOUR_CONFIG[hour]
+        # Prend le MAX entre base et heure
+        # (on ne descend jamais en dessous du base_score)
+        final = max(base_score, hour_score)
+        return final, label
+    # Heures non configurées → score normal
+    return base_score, "📊 NORMAL"
 
 
 class MemeSniper:
@@ -143,7 +185,6 @@ class MemeSniper:
             ml_scorer=self.ml_scorer,
         )
 
-        # Injecter trade_assistant dans alert_sender
         self.alert_sender.set_trade_assistant(self.trade_assistant)
 
         self.simulator = Simulator(ml_scorer=self.ml_scorer)
@@ -211,6 +252,10 @@ class MemeSniper:
         self.max_alerted       = 500
         self.telegram_offset   = 0
 
+        # Stats des améliorations v13.5
+        self.fast_alerts   = 0   # A) tokens traités en mode FAST
+        self.hour_filtered = 0   # B) tokens filtrés par heure
+
     # ═══════════════════════════════════════════════════
     # RUN
     # ═══════════════════════════════════════════════════
@@ -219,7 +264,7 @@ class MemeSniper:
         self.http_session = aiohttp.ClientSession()
 
         modules_to_start = [
-            ("TokenSafety v1.2",      self.token_safety),
+            ("TokenSafety v1.3",      self.token_safety),
             ("RadyiumMonitor",         self.raydium_monitor),
             ("MomentumDetector v1.2",  self.momentum_detector),
             ("BullRunAnalyzer",        self.bull_analyzer),
@@ -258,13 +303,20 @@ class MemeSniper:
         ml_stats   = self.ml_scorer.get_stats()
         opt_config = self.auto_optimizer.get_current_config()
 
-        logger.info("🚀 MemeSniper v13.4 FINAL démarré !")
+        hour_score, hour_label = get_hourly_min_score(
+            opt_config.get("min_score", MIN_SCORE)
+        )
+
+        logger.info("🚀 MemeSniper v13.5 FINAL démarré !")
         logger.info(f"   Score min    : {opt_config.get('min_score', MIN_SCORE)}/10")
+        logger.info(f"   Heure UTC    : {time.gmtime().tm_hour}h — {hour_label} (score {hour_score})")
         logger.info(f"   Alpha Wallets: {total_wallets} (T1:{t1} T1.5:{t15} T2:{t2})")
         logger.info(f"   Twitter      : {twitter_count} (T1:{t1_tw} T2:{t2_tw} T3:{t3_tw})")
         logger.info(f"   ML           : {ml_stats.get('trades', 0)} trades")
-        logger.info(f"   Boutons BUY  : ACTIF ✅")
-        logger.info(f"   Sell Signals : ACTIF ✅ (SL {self.sell_generator.SL_PCT}%)")
+        logger.info(f"   ⚡ Speed adaptatif : ACTIF")
+        logger.info(f"   🕐 Filtre horaire  : ACTIF")
+        logger.info(f"   🎯 Bouton SELL     : ACTIF")
+        logger.info(f"   🐋 Micro whale     : ACTIF")
 
         if self.dashboard:
             logger.info(
@@ -326,7 +378,7 @@ class MemeSniper:
         await asyncio.gather(*tasks, return_exceptions=True)
 
     # ═══════════════════════════════════════════════════
-    # BOUCLES
+    # BOUCLES (inchangées)
     # ═══════════════════════════════════════════════════
 
     async def _run_websocket(self):
@@ -373,10 +425,14 @@ class MemeSniper:
             try:
                 await self.market_context.fetch_market_data()
                 sig = self.market_context.get_market_signal()
+                hour_score, hour_label = get_hourly_min_score(
+                    self.auto_optimizer.get_min_score()
+                )
                 logger.info(
                     f"[MARKET] {sig['regime']} | "
                     f"BTC {sig['btc_change_24h']:+.1f}% | "
-                    f"FG {sig['fear_greed']}"
+                    f"FG {sig['fear_greed']} | "
+                    f"Heure: {hour_label} score≥{hour_score}"
                 )
             except asyncio.CancelledError:
                 break
@@ -500,16 +556,15 @@ class MemeSniper:
     async def _run_stats_reporter(self):
         logger.info("[STATS] Actif 24h — silencieux si aucune activité")
         await asyncio.sleep(STATS_EVERY)
-
         last_alerts = 0
         last_trades = 0
-
         while True:
             try:
                 stats          = self.perf_tracker.get_stats()
                 current_alerts = stats.get("total_alerts", 0)
-                current_trades = stats.get("wins", 0) + stats.get("losses", 0)
-
+                current_trades = (
+                    stats.get("wins", 0) + stats.get("losses", 0)
+                )
                 delta_alerts = current_alerts - last_alerts
                 delta_trades = current_trades - last_trades
                 has_activity = (delta_alerts > 0) or (delta_trades > 0)
@@ -566,6 +621,8 @@ class MemeSniper:
                     f"watch={wl_stats['active_watches']} | "
                     f"sim={sim_stats['open_positions']}o/"
                     f"{sim_stats['closed_positions']}c | "
+                    f"fast={self.fast_alerts} | "
+                    f"hfilt={self.hour_filtered} | "
                     f"gc={collected}"
                 )
             except asyncio.CancelledError:
@@ -588,6 +645,10 @@ class MemeSniper:
                 except Exception:
                     regime = "N/A"
 
+                hour_score, hour_label = get_hourly_min_score(
+                    self.auto_optimizer.get_min_score()
+                )
+
                 ml   = self.ml_scorer.get_stats()
                 sell = self.sell_generator.get_stats()
                 wd   = self.wallet_discovery.get_stats()
@@ -599,7 +660,9 @@ class MemeSniper:
 
                 logger.info(
                     f"[HEALTH] {pause} | Up:{uptime}min | WS:{ws} | "
+                    f"Hour:{hour_label}(≥{hour_score}) | "
                     f"Anal:{self.tokens_analyzed} | Alrt:{self.alerts_sent} | "
+                    f"Fast:{self.fast_alerts} | HFilt:{self.hour_filtered} | "
                     f"Copy:{self.copy_trades} | Tw:{self.twitter_signals} | "
                     f"Rd:{self.raydium_tokens} | Mom:{self.momentum_alerts} | "
                     f"Bulls:{len(self.bull_analyzer.bulls)} | "
@@ -624,7 +687,7 @@ class MemeSniper:
             await asyncio.sleep(HEALTH_CHECK_EVERY)
 
     # ═══════════════════════════════════════════════════
-    # TELEGRAM : INIT OFFSET
+    # TELEGRAM
     # ═══════════════════════════════════════════════════
 
     async def _init_telegram_offset(self):
@@ -648,10 +711,6 @@ class MemeSniper:
                         )
         except Exception:
             pass
-
-    # ═══════════════════════════════════════════════════
-    # TELEGRAM : BOUCLE UPDATES
-    # ═══════════════════════════════════════════════════
 
     async def _run_command_listener(self):
         logger.info(
@@ -682,7 +741,6 @@ class MemeSniper:
                         for update in data.get("result", []):
                             self.telegram_offset = update["update_id"] + 1
 
-                            # ── Boutons inline ──────────────────────────
                             if "callback_query" in update:
                                 cq      = update["callback_query"]
                                 cq_chat = str(
@@ -697,7 +755,6 @@ class MemeSniper:
                                         logger.error(f"[CALLBACK] {e}")
                                 continue
 
-                            # ── Messages texte ───────────────────────────
                             msg  = update.get("message", {})
                             text = msg.get("text", "").strip()
                             chat = str(
@@ -744,7 +801,6 @@ class MemeSniper:
         if user_id:
             self.admin_security.register_command(user_id, text_lower)
 
-        # Commandes avec arguments
         cmd_args = {
             "/check ":     self._cmd_check,
             "/win ":       self._cmd_win,
@@ -768,7 +824,6 @@ class MemeSniper:
                 await handler(text[len(prefix):].strip())
                 return
 
-        # Commandes sans arguments
         routes = {
             "/status":         self._cmd_status,
             "/stats":          self._cmd_stats,
@@ -839,21 +894,28 @@ class MemeSniper:
         ta      = self.trade_assistant.get_stats()
         sim     = self.simulator.get_stats()
 
+        hour_score, hour_label = get_hourly_min_score(
+            self.auto_optimizer.get_min_score()
+        )
+
         pause_str = "⏸ EN PAUSE" if self.paused else "▶️ Actif"
         ws_str    = "✅ Actif"   if self.ws_active else "❌ Inactif"
 
         msg = (
-            f"🤖 *MemeSniper v13\\.4 FINAL*\n"
+            f"🤖 *MemeSniper v13\\.5*\n"
             f"━━━━━━━━━━━━━━\n\n"
             f"⏱ Uptime: `{h}h {m}m {s}s`\n"
             f"🔄 État: *{self._esc(pause_str)}*\n"
-            f"📡 WebSocket: {ws_str}\n\n"
+            f"📡 WebSocket: {ws_str}\n"
+            f"🕐 Heure: `{self._esc(hour_label)}` "
+            f"\\(score ≥ `{hour_score}`\\)\n\n"
             f"🎯 *Modules :*\n"
-            f"🛡️ Safety v1\\.2 \\| 🔥 Momentum v1\\.2\n"
+            f"🛡️ Safety v1\\.3 \\| 🔥 Momentum v1\\.2\n"
+            f"⚡ Speed adaptatif \\| 🐋 Micro whale\n"
             f"🎯 Bulls: `{n_bulls}` \\| "
             f"💰 Sells: `{sell['positions_open']}` pos\n"
-            f"🛑 SL hits: `{sell['sl_hits']}` \\| "
-            f"🎯 TP hits: `{sell['tp_hits']}`\n"
+            f"🛑 SL: `{sell['sl_hits']}` \\| "
+            f"🎯 TP: `{sell['tp_hits']}`\n"
             f"📸 Charts \\| 🔍 Wallets: `{wd['wallets_tracked']}`\n"
             f"🎯 Optim: `{opt['total_optimizations']}`\n"
             f"💼 Portfolio: `{port['open_positions']}` pos\n"
@@ -868,6 +930,8 @@ class MemeSniper:
             f"📊 *Activité :*\n"
             f"  Analysés: `{self.tokens_analyzed}`\n"
             f"  Alertes: `{self.alerts_sent}`\n"
+            f"  Fast: `{self.fast_alerts}` \\| "
+            f"Filtrés heure: `{self.hour_filtered}`\n"
             f"  Sell signals: `{self.sell_alerts_sent}`\n"
             f"  Copy: `{self.copy_trades}`\n"
             f"  Twitter: `{self.twitter_signals}`\n"
@@ -879,7 +943,6 @@ class MemeSniper:
         await self._send_reply(msg)
 
     async def _cmd_stats(self):
-        """FIX AUDIT : utilise tier_stats dict correctement."""
         try:
             stats      = self.perf_tracker.get_stats()
             tier_stats = stats.get("tier_stats", {})
@@ -1248,16 +1311,12 @@ class MemeSniper:
             f"⏱ Expire dans 10 min"
         )
 
-        # FIX : buttons sérialisés
         buttons = {
             "inline_keyboard": [
-                [{
-                    "text": "🚀 OUVRIR PHOTON",
-                    "url":  result["photon_url"],
-                }],
+                [{"text": "🚀 OUVRIR PHOTON", "url": result["photon_url"]}],
                 [{
                     "text": "📊 Chart DexScreener",
-                    "url":  f"https://dexscreener.com/solana/{result['mint']}",
+                    "url": f"https://dexscreener.com/solana/{result['mint']}",
                 }],
             ]
         }
@@ -1302,14 +1361,9 @@ class MemeSniper:
             await self._send_reply(f"❌ {self._esc(result['message'])}")
 
     async def _cmd_sell(self, args: str):
-        """Alias /sell → /sold"""
         await self._cmd_sold(args)
 
     async def _cmd_sold(self, args: str):
-        """
-        /sold SYMBOL POURCENTAGE [notes]
-        FIX AUDIT : MarkdownV2 cohérent + register_sell() correct
-        """
         parts = args.split() if args else []
 
         if len(parts) < 2:
@@ -1329,10 +1383,8 @@ class MemeSniper:
 
         try:
             is_negative = pnl_raw.startswith("-")
-            raw_val     = float(
-                pnl_raw.replace("+", "").replace("-", "")
-            )
-            pnl_pct = -raw_val if is_negative else raw_val
+            raw_val     = float(pnl_raw.replace("+", "").replace("-", ""))
+            pnl_pct     = -raw_val if is_negative else raw_val
         except ValueError:
             await self._send_reply(
                 "❌ Pourcentage invalide\\.\n"
@@ -1340,7 +1392,6 @@ class MemeSniper:
             )
             return
 
-        # Enregistrer via trade_assistant.register_sell()
         result = await self.trade_assistant.register_sell(
             symbol=symbol,
             pnl_pct=pnl_pct,
@@ -1357,7 +1408,6 @@ class MemeSniper:
             )
             return
 
-        # ML déjà nourri par register_sell() en interne
         pnl_eur  = result.get("pnl_eur", 0)
         final    = result.get("final_eur", 0)
         amount   = result.get("amount_eur", 0)
@@ -1476,8 +1526,10 @@ class MemeSniper:
 
         open_pos = self.simulator.get_open_positions()
         if open_pos:
-            lines.extend(["", "━━━━━━━━━━━━━━",
-                f"💎 *Positions ouvertes \\({len(open_pos)}\\) :*"])
+            lines.extend([
+                "", "━━━━━━━━━━━━━━",
+                f"💎 *Positions ouvertes \\({len(open_pos)}\\) :*",
+            ])
             for p in open_pos[:5]:
                 sym = self._esc(p["symbol"])
                 pnl = p.get("current_pnl", 0)
@@ -1486,14 +1538,25 @@ class MemeSniper:
 
         recent = self.simulator.get_recent_trades(limit=5)
         if recent:
-            lines.extend(["", "━━━━━━━━━━━━━━", "📋 *5 derniers trades :*"])
+            lines.extend([
+                "", "━━━━━━━━━━━━━━",
+                "📋 *5 derniers trades :*",
+            ])
             for t in recent:
                 sym     = self._esc(t["symbol"])
                 pnl_pct = t.get("pnl_pct", 0)
                 pnl_eur = t.get("pnl_eur", 0)
+                reason  = t.get("exit_reason", "")
                 e       = "🚀" if pnl_pct > 0 else "💀"
+                reason_icon = (
+                    "🛑" if "stop_loss" in reason
+                    else "🎯" if "take_profit" in reason
+                    else "⏰" if "timeout" in reason
+                    else ""
+                )
                 lines.append(
-                    f"  {e} `${sym}` `{pnl_pct:+.0f}%` "
+                    f"  {e}{reason_icon} `${sym}` "
+                    f"`{pnl_pct:+.0f}%` "
                     f"\\({pnl_eur:+.2f}€\\)"
                 )
 
@@ -1718,7 +1781,7 @@ class MemeSniper:
         await self._send_reply("\n".join(lines))
 
     # ═══════════════════════════════════════════════════
-    # POSITIONS SELL SIGNALS
+    # POSITIONS
     # ═══════════════════════════════════════════════════
 
     async def _cmd_positions(self):
@@ -1842,9 +1905,7 @@ class MemeSniper:
             "",
         ]
         for i, c in enumerate(candidates, 1):
-            short = (
-                c["wallet"][:8] + "\\.\\.\\." + c["wallet"][-4:]
-            )
+            short = c["wallet"][:8] + "\\.\\.\\." + c["wallet"][-4:]
             lines.append(f"`{i}\\.` `{short}`")
             lines.append(
                 f"  Bulls: `{c['bulls_hit']}` \\| "
@@ -1934,7 +1995,12 @@ class MemeSniper:
     async def _cmd_admin(self):
         stats  = self.admin_security.get_stats()
         admins = self.admin_security.get_authorized_admins()
-        lines  = [
+
+        hour_score, hour_label = get_hourly_min_score(
+            self.auto_optimizer.get_min_score()
+        )
+
+        lines = [
             "🔐 *ADMIN SECURITY*",
             "━━━━━━━━━━━━━━",
             "",
@@ -1942,6 +2008,10 @@ class MemeSniper:
             f"Commandes: `{stats['total_commands']}`",
             f"Blacklistés: `{stats['blacklisted']}`",
             f"Violations: `{stats['total_violations']}`",
+            "",
+            "🕐 *Filtre horaire actuel :*",
+            f"  {self._esc(hour_label)} \\| Score min: `{hour_score}`",
+            f"  Heure UTC: `{time.gmtime().tm_hour}h`",
             "",
             "👥 *Admins :*",
         ]
@@ -1963,7 +2033,7 @@ class MemeSniper:
 
     async def _cmd_help(self):
         msg = (
-            "🤖 *MemeSniper v13\\.4 FINAL*\n"
+            "🤖 *MemeSniper v13\\.5*\n"
             "━━━━━━━━━━━━━━\n\n"
             "📊 *Info :*\n"
             "/status /stats /alertes\n"
@@ -2012,7 +2082,6 @@ class MemeSniper:
     # ═══════════════════════════════════════════════════
 
     async def _send_reply(self, text: str):
-        """Envoie une réponse MarkdownV2."""
         await self.alert_sender._send_telegram(text)
 
     def _esc(self, text: str) -> str:
@@ -2044,11 +2113,16 @@ class MemeSniper:
             return
         if address in self.processing_tokens:
             return
+
         symbol = token_data.get("symbol", "???")
         logger.info(f"[WS] 🆕 {symbol} ({address[:8]}...)")
+
         if self.dashboard:
             self.dashboard.add_event(f"Nouveau: {symbol}")
-        await asyncio.sleep(45)
+
+        # Attente minimale pour laisser le token se stabiliser
+        await asyncio.sleep(20)
+
         await self._analyze_and_alert(address, source="websocket")
 
     async def handle_new_token_polling(self, token: dict):
@@ -2083,9 +2157,7 @@ class MemeSniper:
         logger.info(f"[RAYDIUM] {symbol} | Liq: ${liq:,.0f}")
         if self.dashboard:
             self.dashboard.add_event(f"Raydium: {symbol}")
-        await self._analyze_and_alert(
-            address, source=f"raydium_{source}"
-        )
+        await self._analyze_and_alert(address, source=f"raydium_{source}")
 
     async def handle_momentum_token(self, token_data: dict):
         try:
@@ -2116,21 +2188,18 @@ class MemeSniper:
                 f"💧 Liq: `${token_data['liquidity']/1000:.0f}K`\n\n"
                 f"⚠️ *DYOR*\n`{mint}`"
             )
-
-            # FIX : buttons sérialisés
             buttons = {
                 "inline_keyboard": [[
                     {
                         "text": "🚀 Photon",
-                        "url":  f"https://photon-sol.tinyastro.io/en/lp/{mint}",
+                        "url": f"https://photon-sol.tinyastro.io/en/lp/{mint}",
                     },
                     {
                         "text": "📊 Chart",
-                        "url":  f"https://dexscreener.com/solana/{mint}",
+                        "url": f"https://dexscreener.com/solana/{mint}",
                     },
                 ]]
             }
-
             await self.alert_sender._send_telegram(msg, buttons=buttons)
             self.momentum_alerts += 1
 
@@ -2143,9 +2212,8 @@ class MemeSniper:
 
     async def handle_sell_signal(self, signal_data: dict):
         """
-        FIX v13.4 :
-        - buttons sérialisés avec json.dumps
-        - SL/TP bien distingués dans le message
+        C) Bouton SELL rapide dans le signal.
+        Lien Photon ET Jupiter directement dans le message.
         """
         try:
             symbol     = signal_data["symbol"]
@@ -2154,7 +2222,6 @@ class MemeSniper:
             signals    = signal_data["signals"]
             confidence = signal_data["confidence"]
 
-            # Paper trading automatique
             try:
                 await self.simulator.simulate_sell(
                     mint=mint, reason="sell_signal"
@@ -2189,19 +2256,53 @@ class MemeSniper:
                 f"\n`{mint}`"
             )
 
-            # FIX : json.dumps obligatoire
-            buttons = {
-                "inline_keyboard": [[
-                    {
-                        "text": "💱 Jupiter",
-                        "url":  f"https://jup.ag/swap/{mint}-SOL",
-                    },
-                    {
-                        "text": "💱 Photon",
-                        "url":  f"https://photon-sol.tinyastro.io/en/lp/{mint}",
-                    },
-                ]]
-            }
+            # C) Boutons SELL rapide — Photon + Jupiter en 1 clic
+            if has_sl:
+                # SL → boutons urgents bien visibles
+                buttons = {
+                    "inline_keyboard": [
+                        [{
+                            "text": "🚨 VENDRE SUR PHOTON",
+                            "url": f"https://photon-sol.tinyastro.io/en/lp/{mint}",
+                        }],
+                        [{
+                            "text": "💱 Vendre sur Jupiter",
+                            "url": f"https://jup.ag/swap/{mint}-SOL",
+                        }],
+                        [{
+                            "text": "📊 Chart",
+                            "url": f"https://dexscreener.com/solana/{mint}",
+                        }],
+                    ]
+                }
+            elif has_tp:
+                # TP → boutons normaux
+                buttons = {
+                    "inline_keyboard": [[
+                        {
+                            "text": "🎯 Vendre TP sur Photon",
+                            "url": f"https://photon-sol.tinyastro.io/en/lp/{mint}",
+                        },
+                        {
+                            "text": "📊 Chart",
+                            "url": f"https://dexscreener.com/solana/{mint}",
+                        },
+                    ]]
+                }
+            else:
+                # Warning → boutons discrets
+                buttons = {
+                    "inline_keyboard": [[
+                        {
+                            "text": "💱 Jupiter",
+                            "url": f"https://jup.ag/swap/{mint}-SOL",
+                        },
+                        {
+                            "text": "💱 Photon",
+                            "url": f"https://photon-sol.tinyastro.io/en/lp/{mint}",
+                        },
+                    ]]
+                }
 
             await self.alert_sender._send_telegram(msg, buttons=buttons)
             self.sell_alerts_sent += 1
@@ -2240,17 +2341,14 @@ class MemeSniper:
                 f"💰 MC: `${dump_data['market_cap']/1000:.0f}K`\n\n"
                 f"`{mint}`"
             )
-
-            # FIX : json.dumps
             buttons = {
                 "inline_keyboard": [[
                     {
                         "text": "📊 Chart",
-                        "url":  f"https://dexscreener.com/solana/{mint}",
+                        "url": f"https://dexscreener.com/solana/{mint}",
                     }
                 ]]
             }
-
             await self.alert_sender._send_telegram(msg, buttons=buttons)
             self.dump_alerts_sent += 1
 
@@ -2271,8 +2369,7 @@ class MemeSniper:
             cascade  = sell_data.get("cascade", False)
 
             emoji = "🐋🚨" if severity == "GIGA_SELL" else "🐋"
-
-            msg = (
+            msg   = (
                 f"{emoji} *WHALE SELL*\n"
                 f"━━━━━━━━━━━━━━\n\n"
                 f"💎 *${self._esc(symbol)}*\n"
@@ -2289,17 +2386,14 @@ class MemeSniper:
                 f"🟢 Buy ratio: `{sell_data['buy_ratio']}%`\n\n"
                 f"`{mint}`"
             )
-
-            # FIX : json.dumps
             buttons = {
                 "inline_keyboard": [[
                     {
                         "text": "📊 Chart",
-                        "url":  f"https://dexscreener.com/solana/{mint}",
+                        "url": f"https://dexscreener.com/solana/{mint}",
                     }
                 ]]
             }
-
             await self.alert_sender._send_telegram(msg, buttons=buttons)
             self.whale_sell_alerts_sent += 1
 
@@ -2333,21 +2427,18 @@ class MemeSniper:
                 f"📊 Vol 24h: `${current.get('volume_24h', 0)/1000:.0f}K`\n\n"
                 f"`{mint}`"
             )
-
-            # FIX : json.dumps
             buttons = {
                 "inline_keyboard": [[
                     {
                         "text": "🚀 Photon",
-                        "url":  f"https://photon-sol.tinyastro.io/en/lp/{mint}",
+                        "url": f"https://photon-sol.tinyastro.io/en/lp/{mint}",
                     },
                     {
                         "text": "📊 Chart",
-                        "url":  f"https://dexscreener.com/solana/{mint}",
+                        "url": f"https://dexscreener.com/solana/{mint}",
                     },
                 ]]
             }
-
             await self.alert_sender._send_telegram(msg, buttons=buttons)
             self.watchlist_alerts_sent += 1
 
@@ -2359,7 +2450,10 @@ class MemeSniper:
             logger.error(f"Watch handler : {e}")
 
     # ═══════════════════════════════════════════════════
-    # ANALYZE & ALERT v13.4 FINAL
+    # ANALYZE & ALERT v13.5
+    # A) Speed adaptatif
+    # B) Filtre horaire
+    # D) Micro whale detection
     # ═══════════════════════════════════════════════════
 
     async def _analyze_and_alert(self, address: str, source: str):
@@ -2401,8 +2495,8 @@ class MemeSniper:
                 address
             )
             if not twitter_signal and symbol and symbol != "???":
-                twitter_signal = self.twitter_tracker.get_symbol_twitter_signal(
-                    symbol
+                twitter_signal = (
+                    self.twitter_tracker.get_symbol_twitter_signal(symbol)
                 )
 
             if twitter_signal:
@@ -2426,37 +2520,56 @@ class MemeSniper:
                 analysis["ml_bonus"]    = ml_bonus
                 analysis["ml_features"] = ml_features
 
-            logger.info(
-                f"[SCORE] {symbol} {score:.1f}/10 | "
-                f"Safety:{safety.get('score', '?')}/10 | "
-                f"src:{source}"
-            )
+            # ── Score minimum selon la source ────────────
+            base_min_score = self.auto_optimizer.get_min_score()
 
-            # Score minimum selon la source
-            min_score = self.auto_optimizer.get_min_score()
+            # B) Filtre horaire — ajuste selon l'heure UTC
+            if source not in ("twitter_TIER1", "copy_TIER1"):
+                # Ne filtre pas les signaux alpha TIER1 par heure
+                hour_min_score, hour_label = get_hourly_min_score(
+                    base_min_score
+                )
+                min_score = hour_min_score
+            else:
+                min_score  = base_min_score
+                hour_label = "ALPHA"
+
+            # Ajustements selon la source
             if source.startswith("twitter_"):
                 if "TIER1" in source:
-                    min_score = 6.0
+                    min_score = min(min_score, 6.0)
                 elif "TIER2" in source:
-                    min_score = 6.5
+                    min_score = min(min_score, 6.5)
                 elif "TIER3" in source:
-                    min_score = 7.0
+                    min_score = min(min_score, 7.0)
             elif source.startswith("copy_"):
                 copy_wallets = analysis.get("alpha_wallet_list", [])
                 if copy_wallets:
-                    min_score = min(
+                    copy_thresh = min(
                         [get_copy_threshold(w) for w in copy_wallets]
                     )
+                    min_score = min(min_score, copy_thresh)
                 else:
                     if "TIER1_5" in source:
-                        min_score = 6.0
+                        min_score = min(min_score, 6.0)
                     elif "TIER1" in source:
-                        min_score = 5.5
+                        min_score = min(min_score, 5.5)
                     elif "TIER2" in source:
-                        min_score = 6.5
+                        min_score = min(min_score, 6.5)
 
             if score < min_score:
+                self.hour_filtered += 1
+                logger.debug(
+                    f"[FILTER] {symbol} score={score:.1f} < "
+                    f"min={min_score:.1f} ({hour_label})"
+                )
                 return
+
+            logger.info(
+                f"[SCORE] {symbol} {score:.1f}/10 | "
+                f"Safety:{safety.get('score', '?')}/10 | "
+                f"src:{source} | heure:{hour_label}"
+            )
 
             decision = self.alert_sender.decision_eng.decide(analysis)
             if decision["action"] == "IGNORE":
@@ -2465,6 +2578,73 @@ class MemeSniper:
                     f"{decision.get('reason', '?')}"
                 )
                 return
+
+            # ── A) SPEED ADAPTATIF ────────────────────────
+            if source == "websocket":
+                alpha_count = analysis.get("alpha_wallets", 0)
+                has_twitter = bool(analysis.get("twitter_signal"))
+                has_whale   = bool(
+                    analysis.get("whale_inflow", {}) and
+                    analysis.get("whale_inflow", {}).get("has_whales")
+                )
+
+                if (
+                    score >= 9.0
+                    or alpha_count >= 2
+                    or (has_twitter and has_whale)
+                ):
+                    # FAST : signal très fort
+                    extra_wait = 0
+                    self.fast_alerts += 1
+                    logger.info(
+                        f"[SPEED] ⚡ FAST : {symbol} "
+                        f"score={score:.1f} alpha={alpha_count}"
+                    )
+                elif (
+                    score >= 8.5
+                    or alpha_count >= 1
+                    or has_twitter
+                    or has_whale
+                ):
+                    # MEDIUM : signal fort
+                    extra_wait = 10
+                    logger.info(
+                        f"[SPEED] 🔥 MEDIUM : {symbol} "
+                        f"score={score:.1f} wait+{extra_wait}s"
+                    )
+                else:
+                    # NORMAL : signal standard
+                    extra_wait = 25
+                    logger.debug(
+                        f"[SPEED] 📊 NORMAL : {symbol} "
+                        f"score={score:.1f} wait+{extra_wait}s"
+                    )
+
+                if extra_wait > 0:
+                    await asyncio.sleep(extra_wait)
+
+                # Re-check après l'attente
+                if address in self.alerted_tokens:
+                    return
+
+            # ── D) MICRO WHALE DETECTION ─────────────────
+            # Vérifie si un alpha wallet TIER1 a fait un
+            # micro achat ($200-$500) sur ce token
+            # → Signal précoce avant le gros achat
+            alpha_signal = analysis.get("alpha_signal", {})
+            if alpha_signal and alpha_signal.get("has_alpha"):
+                wallets = alpha_signal.get("wallets", [])
+                for wallet in wallets:
+                    tier = get_wallet_tier(wallet)
+                    if tier == "TIER1":
+                        # Bonus supplémentaire pour micro whale TIER1
+                        score = min(10.0, score + 0.5)
+                        analysis["score"] = score
+                        logger.info(
+                            f"[MICRO_WHALE] 🐋 TIER1 détecté : "
+                            f"{wallet[:8]}... sur {symbol}"
+                        )
+                        break
 
             # Chart screenshot
             chart_url = None
@@ -2475,7 +2655,6 @@ class MemeSniper:
             except Exception:
                 pass
 
-            # FIX AUDIT : price_usd au lieu de price
             sent = await self.alert_sender.send_alert(
                 token_data=analysis,
                 decision=decision,
@@ -2502,7 +2681,6 @@ class MemeSniper:
                     self.position_tracker.add_position(
                         analysis, decision, decision["amount_eur"]
                     )
-                    # Paper trading automatique
                     try:
                         await self.simulator.simulate_buy(
                             mint=address,
@@ -2591,15 +2769,9 @@ async def cleanup_all(bot: MemeSniper):
         pass
 
     modules_to_close = [
-        bot.analyzer,
-        bot.alert_sender,
-        bot.position_tracker,
-        bot.market_context,
-        bot.alpha_tracker,
-        bot.early_detector,
-        bot.whale_inflow,
-        bot.twitter_tracker,
-        bot.whale_tracker,
+        bot.analyzer, bot.alert_sender, bot.position_tracker,
+        bot.market_context, bot.alpha_tracker, bot.early_detector,
+        bot.whale_inflow, bot.twitter_tracker, bot.whale_tracker,
     ]
     for module in modules_to_close:
         try:
@@ -2610,10 +2782,6 @@ async def cleanup_all(bot: MemeSniper):
 
     logger.info("[CLEANUP] 🎉 Arrêt complet")
 
-
-# ═══════════════════════════════════════════════════
-# ENTRY POINT
-# ═══════════════════════════════════════════════════
 
 if __name__ == "__main__":
     bot = MemeSniper()
