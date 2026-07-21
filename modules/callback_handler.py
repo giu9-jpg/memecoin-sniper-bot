@@ -1,15 +1,11 @@
-# modules/callback_handler.py — v1.1
+# modules/callback_handler.py — v1.2
 # ═══════════════════════════════════════════════
-# v1.1 :
-# + Utilise trade_assistant.confirm_buy_from_callback()
-# + Compatible trade_assistant v1.1
-# + Gestion erreurs robuste
-#
-# Callbacks supportés :
-#   buy_{mint}_{amount}     → Prépare achat Photon + confirmation
-#   bought_{mint}_{amount}  → Confirme achat + enregistre portfolio
-#   ignore_{mint}           → Ignore l'alerte
-# ═══════════════════════════════════════════════
+# v1.2 CORRECTIONS :
+# + FIX DÉFAUT #1 : ajout auto au sell_signal_generator
+#   après confirmation achat (bouton ✅)
+# + sell_generator injecté dans __init__
+# + _add_to_sell_tracker() : récupère prix + ajoute position
+# + Message de confirmation mis à jour
 
 import json
 import aiohttp
@@ -28,12 +24,14 @@ class CallbackHandler:
         ml_scorer=None,
         performance_tracker=None,
         portfolio_tracker=None,
+        sell_generator=None,      # ← v1.2 NOUVEAU
     ):
         self.token               = bot_token
         self.trade_assistant     = trade_assistant
         self.ml_scorer           = ml_scorer
         self.performance_tracker = performance_tracker
         self.portfolio_tracker   = portfolio_tracker
+        self.sell_generator      = sell_generator   # ← v1.2
         self.base_url            = f"https://api.telegram.org/bot{bot_token}"
 
     # ════════════════════════════════════════
@@ -41,10 +39,6 @@ class CallbackHandler:
     # ════════════════════════════════════════
 
     async def handle(self, callback_query: dict):
-        """
-        Reçoit un callback_query Telegram.
-        Route vers le bon handler selon callback_data.
-        """
         try:
             callback_id = callback_query.get("id", "")
             data        = callback_query.get("data", "")
@@ -93,43 +87,33 @@ class CallbackHandler:
         data:        str,
         username:    str,
     ):
-        """
-        Clic sur "🟢 BUY 10€"
-        → Popup + message avec lien Photon + bouton de confirmation
-        """
         mint, amount = self._parse_mint_amount(data, prefix="buy_")
         if mint is None:
             await self._answer(callback_id, "❌ Erreur format callback")
             return
 
-        # Récupérer le symbole depuis pending_buys
-        symbol = "TOKEN"
+        symbol     = "TOKEN"
         photon_url = (
             f"https://photon-sol.tinyastro.io/en/lp/{mint}"
             f"?amount={amount:.6f}"
         )
 
         if self.trade_assistant:
-            pending = self.trade_assistant.pending_buys.get(mint, {})
-            symbol  = pending.get("symbol", "TOKEN")
-            # Utiliser l'URL Photon avec le bon montant SOL
-            sol_price = getattr(
-                self.trade_assistant, "SOL_PRICE_USD", 200
-            )
+            pending   = self.trade_assistant.pending_buys.get(mint, {})
+            symbol    = pending.get("symbol", "TOKEN")
+            sol_price = getattr(self.trade_assistant, "SOL_PRICE_USD", 200)
             amount_sol = (amount * 1.08) / max(sol_price, 1)
             photon_url = (
                 f"https://photon-sol.tinyastro.io/en/lp/{mint}"
                 f"?amount={amount_sol:.6f}"
             )
 
-        # Popup de confirmation
         await self._answer(
             callback_id,
             f"🚀 Ouvre Photon et achète {symbol} !",
             show_alert=True,
         )
 
-        # Message avec étapes + boutons
         keyboard = {
             "inline_keyboard": [
                 [{
@@ -174,10 +158,8 @@ class CallbackHandler:
         username:    str,
     ):
         """
-        Clic sur "✅ J'ai acheté X€ !"
-        → Confirme via trade_assistant.confirm_buy_from_callback()
-        → Enregistre dans portfolio
-        → Envoie message de confirmation avec instructions /sold
+        v1.2 : Confirme l'achat ET ajoute au sell_signal_generator
+        pour surveillance SL/TP automatique.
         """
         mint, amount = self._parse_mint_amount(data, prefix="bought_")
         if mint is None:
@@ -193,10 +175,8 @@ class CallbackHandler:
                     amount=amount,
                 )
             else:
-                # trade_assistant v1.0 sans la méthode → erreur claire
                 logger.error(
-                    "[CALLBACK] confirm_buy_from_callback() manquant "
-                    "dans trade_assistant — mets à jour vers v1.1"
+                    "[CALLBACK] confirm_buy_from_callback() manquant"
                 )
                 await self._answer(
                     callback_id,
@@ -226,16 +206,61 @@ class CallbackHandler:
             )
             return
 
-        # ── Extraire infos du trade ───────────────────
         symbol = trade.get("symbol", "TOKEN")
         score  = trade.get("score", 0)
         tier   = trade.get("tier", "NORMAL")
         mc     = trade.get("market_cap", 0)
+        price  = trade.get("entry_price", 0)
+
+        # ── v1.2 : Ajouter au sell_signal_generator ───
+        # FIX DÉFAUT #1 : SL/TP automatique sur les vrais achats
+        sell_tracker_added = False
+        if self.sell_generator and mint and price > 0:
+            try:
+                # Récupère les données actuelles pour buy_ratio/volume
+                token_data = await self._fetch_token_data(mint)
+
+                entry_liquidity = 0
+                entry_buy_ratio = 60  # valeur par défaut
+                entry_volume_1h = 0
+
+                if token_data:
+                    entry_liquidity = token_data.get("liquidity", 0)
+                    entry_buy_ratio = token_data.get("buy_ratio", 60)
+                    entry_volume_1h = token_data.get("volume_1h", 0)
+                    # Si pas de prix depuis le trade, prend le live
+                    if price == 0:
+                        price = token_data.get("price", 0)
+
+                if price > 0:
+                    self.sell_generator.add_position(
+                        mint=mint,
+                        symbol=symbol,
+                        entry_price=price,
+                        entry_mc=mc,
+                        entry_liquidity=entry_liquidity,
+                        entry_buy_ratio=entry_buy_ratio,
+                        entry_volume_1h=entry_volume_1h,
+                        source="inline_buy",
+                    )
+                    sell_tracker_added = True
+                    logger.info(
+                        f"[CALLBACK] ✅ SL/TP activé : "
+                        f"${symbol} @ ${price:.8f} | "
+                        f"SL: {self.sell_generator.SL_PCT}%"
+                    )
+                else:
+                    logger.warning(
+                        f"[CALLBACK] Prix = 0, SL non activé pour {symbol}"
+                    )
+
+            except Exception as e:
+                logger.error(f"[CALLBACK] sell_generator error: {e}")
 
         # ── Répondre au callback ──────────────────────
         await self._answer(
             callback_id,
-            f"✅ {symbol} enregistré dans le portfolio !",
+            f"✅ {symbol} enregistré ! SL à {self.sell_generator.SL_PCT if self.sell_generator else -25}%",
             show_alert=True,
         )
 
@@ -258,6 +283,12 @@ class CallbackHandler:
             "MANUAL":   "✋",
         }.get(tier, "⚪")
 
+        sl_pct = (
+            self.sell_generator.SL_PCT
+            if self.sell_generator
+            else -25
+        )
+
         # ── Message de confirmation ───────────────────
         msg = (
             f"✅ <b>Achat enregistré — {symbol}</b>\n\n"
@@ -266,6 +297,24 @@ class CallbackHandler:
             f"{tier_emoji} <b>{tier}</b>\n"
             f"📊 MC au buy : <b>{mc_str}</b>\n"
             f"⏰ {datetime.now().strftime('%H:%M:%S')}\n\n"
+            f"━━━━━━━━━━━━━━\n"
+        )
+
+        # Infos SL/TP
+        if sell_tracker_added:
+            msg += (
+                f"🛡️ <b>Protection automatique activée :</b>\n"
+                f"  🛑 Stop Loss : <b>{sl_pct}%</b> → alerte auto\n"
+                f"  🎯 TP1 à <b>+50%</b> | TP2 à <b>+100%</b>\n"
+                f"  🎯 TP3 à <b>+200%</b> | TP4 à <b>+500%</b>\n\n"
+            )
+        else:
+            msg += (
+                f"⚠️ <b>SL non activé</b> (prix indisponible)\n"
+                f"Tape <code>/watch {mint}</code> manuellement\n\n"
+            )
+
+        msg += (
             f"━━━━━━━━━━━━━━\n"
             f"📝 <b>Quand tu vends, tape :</b>\n"
             f"<code>/sold {symbol} +150</code>  → si +150%\n"
@@ -277,7 +326,8 @@ class CallbackHandler:
 
         await self._send_message(chat_id, msg)
         logger.info(
-            f"[CALLBACK] ✅ Achat confirmé: {symbol} {amount}€ "
+            f"[CALLBACK] ✅ Achat complet: {symbol} {amount}€ "
+            f"| SL actif: {sell_tracker_added} "
             f"par @{username}"
         )
 
@@ -293,12 +343,6 @@ class CallbackHandler:
         data:        str,
         username:    str,
     ):
-        """
-        Clic sur "❌ Ignorer"
-        → Retire le token des pending
-        → Notification discrète
-        """
-        # Parse le mint (ignore_{mint})
         mint = data[len("ignore_"):] if data.startswith("ignore_") else ""
 
         if mint and self.trade_assistant:
@@ -312,6 +356,48 @@ class CallbackHandler:
         await self._answer(callback_id, "⏭️ Alerte ignorée")
 
     # ════════════════════════════════════════
+    # v1.2 : Fetch prix live pour le sell tracker
+    # ════════════════════════════════════════
+
+    async def _fetch_token_data(self, mint: str) -> dict | None:
+        """
+        Récupère prix + données pour initialiser le sell tracker.
+        """
+        try:
+            url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
+            async with aiohttp.ClientSession() as s:
+                async with s.get(
+                    url,
+                    timeout=aiohttp.ClientTimeout(total=8),
+                ) as resp:
+                    if resp.status != 200:
+                        return None
+                    data = await resp.json()
+
+            pairs = data.get("pairs") or []
+            if not pairs:
+                return None
+
+            pair     = pairs[0]
+            txns     = pair.get("txns", {}) or {}
+            h1       = txns.get("h1", {}) or {}
+            buys_1h  = h1.get("buys", 0)
+            sells_1h = h1.get("sells", 0)
+            txns_1h  = buys_1h + sells_1h
+            buy_ratio = round(buys_1h / txns_1h * 100, 1) if txns_1h > 0 else 60
+
+            return {
+                "price":      float(pair.get("priceUsd", 0) or 0),
+                "market_cap": pair.get("marketCap", 0) or pair.get("fdv", 0) or 0,
+                "liquidity":  pair.get("liquidity", {}).get("usd", 0) or 0,
+                "volume_1h":  pair.get("volume", {}).get("h1", 0) or 0,
+                "buy_ratio":  buy_ratio,
+            }
+        except Exception as e:
+            logger.debug(f"[CALLBACK] _fetch_token_data: {e}")
+            return None
+
+    # ════════════════════════════════════════
     # HELPERS PARSING
     # ════════════════════════════════════════
 
@@ -320,33 +406,20 @@ class CallbackHandler:
         data:   str,
         prefix: str,
     ) -> tuple[str | None, float]:
-        """
-        Parse 'buy_{mint}_{amount}' ou 'bought_{mint}_{amount}'.
-
-        Les adresses Solana sont en base58 (pas d'underscore).
-        Le montant est toujours le dernier segment.
-
-        Retourne (mint, amount) ou (None, 0) si erreur.
-        """
         try:
-            # Supprimer le préfixe
             without_prefix = data[len(prefix):]
-
-            # Le montant est toujours le dernier segment
-            parts  = without_prefix.rsplit("_", 1)
+            parts          = without_prefix.rsplit("_", 1)
             if len(parts) != 2:
                 raise ValueError(f"Format invalide: {data}")
-
             mint   = parts[0]
             amount = float(parts[1])
-
             if not mint:
                 raise ValueError("Mint vide")
-
             return mint, amount
-
         except (ValueError, IndexError) as e:
-            logger.error(f"[CALLBACK] _parse_mint_amount error: {e} | data={data}")
+            logger.error(
+                f"[CALLBACK] _parse_mint_amount error: {e} | data={data}"
+            )
             return None, 0.0
 
     # ════════════════════════════════════════
@@ -359,15 +432,10 @@ class CallbackHandler:
         text:        str  = "",
         show_alert:  bool = False,
     ):
-        """
-        answerCallbackQuery — OBLIGATOIRE dans les 10s après chaque clic.
-        show_alert=True  → popup bloquant
-        show_alert=False → notification discrète en haut
-        """
         url     = f"{self.base_url}/answerCallbackQuery"
         payload = {
             "callback_query_id": callback_id,
-            "text":              text[:200],  # max 200 chars Telegram
+            "text":              text[:200],
             "show_alert":        show_alert,
         }
         try:
@@ -386,7 +454,6 @@ class CallbackHandler:
         text:     str,
         keyboard: dict | None = None,
     ):
-        """sendMessage en HTML."""
         url     = f"{self.base_url}/sendMessage"
         payload = {
             "chat_id":                  chat_id,

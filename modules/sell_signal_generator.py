@@ -1,13 +1,14 @@
-# modules/sell_signal_generator.py — v1.3 FINAL
+# modules/sell_signal_generator.py — v1.4
 # ═══════════════════════════════════════════════
-# FIX v1.3 :
-# + FIX CRITIQUE : buttons sérialisés json.dumps dans _trigger_alert
-# + FIX CRITIQUE : SL jamais bloqué par le cooldown (toujours envoyé)
-# + FIX : simulator.simulate_sell() appelé depuis signal_data
+# v1.4 CORRECTIONS :
+# + add_position() vérifie les doublons proprement
+# + add_position_safe() pour ajout depuis callback
+#   sans écraser une position existante
+# + Logs plus clairs sur les positions ajoutées
 #
-# HÉRITÉ v1.2 :
-# + Cooldown 15 min entre alertes normales
-# + Auto-close positions à -70%
+# HÉRITÉ v1.3 :
+# + SL jamais bloqué par le cooldown
+# + buttons sérialisés json.dumps
 
 import asyncio
 import json
@@ -32,8 +33,8 @@ class SellSignalGenerator:
     VOLUME_DROP_THRESHOLD    = 50
     NEGATIVE_5M_THRESHOLD    = -10
     CHECK_INTERVAL           = 60
-    ALERT_COOLDOWN           = 900    # 15 min — NE S'APPLIQUE PAS AU SL
-    AUTO_CLOSE_PNL           = -70    # auto-close si < -70%
+    ALERT_COOLDOWN           = 900
+    AUTO_CLOSE_PNL           = -70
 
     def __init__(self, alert_callback):
         self.alert_callback = alert_callback
@@ -52,7 +53,7 @@ class SellSignalGenerator:
         )
         self.running = True
         logger.info(
-            f"💰 SellSignalGenerator v1.3 démarré "
+            f"💰 SellSignalGenerator v1.4 démarré "
             f"(SL: {self.SL_PCT}% | cooldown: {self.ALERT_COOLDOWN}s | "
             f"auto-close: {self.AUTO_CLOSE_PNL}%)"
         )
@@ -79,6 +80,24 @@ class SellSignalGenerator:
         entry_volume_1h: float,
         source:          str = "manual",
     ):
+        """
+        Ajoute une position à surveiller.
+        Si la position existe déjà et n'est pas fermée → skip.
+        """
+        if mint in self.positions:
+            existing = self.positions[mint]
+            logger.info(
+                f"💰 Position déjà surveillée : "
+                f"${existing['symbol']} — skip"
+            )
+            return
+
+        if entry_price <= 0:
+            logger.warning(
+                f"💰 Prix invalide pour {symbol} : {entry_price} — skip"
+            )
+            return
+
         self.positions[mint] = {
             "mint":            mint,
             "symbol":          symbol,
@@ -97,9 +116,48 @@ class SellSignalGenerator:
             "snapshots":       [],
         }
         logger.info(
-            f"💰 Position ajoutée : ${symbol} "
-            f"@ ${entry_price:.8f} | MC ${entry_mc/1000:.0f}K"
+            f"💰 ✅ Position ajoutée [{source}] : "
+            f"${symbol} @ ${entry_price:.8f} | "
+            f"MC ${entry_mc/1000:.0f}K | "
+            f"SL: {self.SL_PCT}%"
         )
+
+    def add_position_safe(
+        self,
+        mint:            str,
+        symbol:          str,
+        entry_price:     float,
+        entry_mc:        float       = 0,
+        entry_liquidity: float       = 0,
+        entry_buy_ratio: float       = 60,
+        entry_volume_1h: float       = 0,
+        source:          str         = "inline_buy",
+    ) -> bool:
+        """
+        v1.4 : Version sécurisée pour le callback_handler.
+        Retourne True si ajoutée, False si déjà présente.
+        Ne lève jamais d'exception.
+        """
+        try:
+            if mint in self.positions:
+                return False
+            if entry_price <= 0:
+                return False
+
+            self.add_position(
+                mint=mint,
+                symbol=symbol,
+                entry_price=entry_price,
+                entry_mc=entry_mc,
+                entry_liquidity=entry_liquidity,
+                entry_buy_ratio=entry_buy_ratio,
+                entry_volume_1h=entry_volume_1h,
+                source=source,
+            )
+            return True
+        except Exception as e:
+            logger.error(f"[SELL] add_position_safe: {e}")
+            return False
 
     def remove_position(self, mint: str):
         if mint in self.positions:
@@ -145,7 +203,6 @@ class SellSignalGenerator:
             if not pos:
                 return
 
-            # Auto-close si token mort
             if pos.get("last_pnl", 0) < self.AUTO_CLOSE_PNL:
                 logger.info(
                     f"💰 Auto-close ${pos['symbol']} : "
@@ -221,8 +278,7 @@ class SellSignalGenerator:
                 self.tp_hits += 1
                 break
 
-        # ── STOP LOSS ─────────────────────────────────
-        # FIX v1.3 : SL toujours détecté même si cooldown actif
+        # ── STOP LOSS — jamais bloqué par cooldown ────
         if not pos["sl_triggered"] and pnl_pct <= self.SL_PCT:
             signals.append({
                 "type":     "SL",
@@ -235,7 +291,8 @@ class SellSignalGenerator:
             self.sl_hits        += 1
             logger.warning(
                 f"💰 🛑 SL déclenché : ${pos['symbol']} "
-                f"PnL {pnl_pct:.0f}% ≤ {self.SL_PCT}%"
+                f"PnL {pnl_pct:.0f}% ≤ {self.SL_PCT}% "
+                f"[source: {pos.get('source', '?')}]"
             )
 
         # ── BUY RATIO CHUTE ────────────────────────────
@@ -320,8 +377,6 @@ class SellSignalGenerator:
             has_sl = any(s["type"] == "SL" for s in signals)
             has_tp = any(s["type"] == "TP" for s in signals)
 
-            # FIX v1.3 : SL et TP ne sont JAMAIS bloqués par le cooldown
-            # Seuls les signaux WARNING respectent le cooldown
             is_critical = has_sl or has_tp
 
             if not is_critical:
@@ -359,6 +414,7 @@ class SellSignalGenerator:
                 "current_mc":         current.get("market_cap", 0),
                 "current_liquidity":  current.get("liquidity",  0),
                 "current_buy_ratio":  current.get("buy_ratio",  0),
+                "source":             pos.get("source", "unknown"),
             }
 
             self.total_signals += 1
@@ -376,7 +432,7 @@ class SellSignalGenerator:
                 f"💰 SELL SIGNAL ${pos['symbol']} : "
                 f"PnL {pnl_pct:+.0f}% | "
                 f"{'🛑 SL' if has_sl else '🎯 TP' if has_tp else '⚠️ WARN'} | "
-                f"Conf: {confidence}"
+                f"Conf: {confidence} | src:{pos.get('source', '?')}"
             )
 
         except Exception as e:
@@ -387,9 +443,6 @@ class SellSignalGenerator:
     # ════════════════════════════════════════
 
     async def _fetch_token_data(self, mint: str) -> dict | None:
-        """
-        FIX : retourne "price" ET "price_usd" pour compatibilité.
-        """
         try:
             url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
             async with self.session.get(url) as resp:
