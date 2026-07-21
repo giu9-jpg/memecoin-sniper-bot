@@ -1,0 +1,12 @@
+{
+  "config": {
+    "min_score": 8.0,
+    "min_score_tier1": 5.5,
+    "min_score_tier2": 6.5,
+    "quality_min": 60
+  },
+  "history": [],
+  "total_optimizations": 0,
+  "last_optimization": 0,
+  "saved_at": "2024-01-01T00:00:00+00:00"
+}
