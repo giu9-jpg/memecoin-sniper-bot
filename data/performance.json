@@ -1,0 +1,139 @@
+{
+  "AEoZBydfDzf5xrn8mqbw6aZcKzgg31xa5ZRVwUNkpump": {
+    "address": "AEoZBydfDzf5xrn8mqbw6aZcKzgg31xa5ZRVwUNkpump",
+    "symbol": "Mamdani",
+    "name": "The Promised Arrest",
+    "timestamp": 1784732422.444621,
+    "age_minutes": 6.169630976517995,
+    "score": 10.0,
+    "tier": "ULTIMATE",
+    "smart_count": 2,
+    "has_critical": true,
+    "price_entry": 5.315e-05,
+    "market_cap": 53154,
+    "liquidity": 15914.57,
+    "volume_5m": 89734.34,
+    "volume_1h": 114222.82,
+    "momentum": "EARLY_PUMP",
+    "vol_accel": 145.35,
+    "ratio_5m": 1.1517509727626458,
+    "alpha_wallets": 0,
+    "amount_eur": 10.0,
+    "tp_levels": [
+      {
+        "multiplier": 2,
+        "sell_pct": 50
+      },
+      {
+        "multiplier": 4,
+        "sell_pct": 25
+      },
+      {
+        "multiplier": 8,
+        "sell_pct": 15
+      },
+      {
+        "multiplier": 20,
+        "sell_pct": 10
+      }
+    ],
+    "sl_pct": -30,
+    "price_1h": null,
+    "price_6h": null,
+    "price_24h": null,
+    "multiplier_1h": null,
+    "multiplier_24h": null,
+    "result": null,
+    "profit_eur": null
+  },
+  "GiFTuLBSfCBZqpTLNL47bhkkCADfUgVbrfbDwmTepump": {
+    "address": "GiFTuLBSfCBZqpTLNL47bhkkCADfUgVbrfbDwmTepump",
+    "symbol": "TAKEO",
+    "name": "Takeo",
+    "timestamp": 1784732422.864164,
+    "age_minutes": 22.825805139541625,
+    "score": 8.3,
+    "tier": "STRONG",
+    "smart_count": 3,
+    "has_critical": false,
+    "price_entry": 4.488e-05,
+    "market_cap": 44884,
+    "liquidity": 14352.73,
+    "volume_5m": 2865.83,
+    "volume_1h": 32428.09,
+    "momentum": "NEUTRE",
+    "vol_accel": 24.87,
+    "ratio_5m": 0.7291666666666666,
+    "alpha_wallets": 0,
+    "amount_eur": 8.0,
+    "tp_levels": [
+      {
+        "multiplier": 2,
+        "sell_pct": 50
+      },
+      {
+        "multiplier": 5,
+        "sell_pct": 25
+      },
+      {
+        "multiplier": 15,
+        "sell_pct": 15
+      },
+      {
+        "multiplier": 50,
+        "sell_pct": 10
+      }
+    ],
+    "sl_pct": -35,
+    "price_1h": null,
+    "price_6h": null,
+    "price_24h": null,
+    "multiplier_1h": null,
+    "multiplier_24h": null,
+    "result": null,
+    "profit_eur": null
+  },
+  "3FiN2FHTKheZUE7njYhsZob1rUoURHK3QTfRpWNFpump": {
+    "address": "3FiN2FHTKheZUE7njYhsZob1rUoURHK3QTfRpWNFpump",
+    "symbol": "TOP",
+    "name": "Trump On Pole",
+    "timestamp": 1784732423.5216467,
+    "age_minutes": 25.837525721391042,
+    "score": 8.5,
+    "tier": "GOOD",
+    "smart_count": 2,
+    "has_critical": false,
+    "price_entry": 0.0002195,
+    "market_cap": 219542,
+    "liquidity": 33948.68,
+    "volume_5m": 27868.5,
+    "volume_1h": 288188.48,
+    "momentum": "EARLY_PUMP",
+    "vol_accel": 26.31,
+    "ratio_5m": 1.3878205128205128,
+    "alpha_wallets": 0,
+    "amount_eur": 6.0,
+    "tp_levels": [
+      {
+        "multiplier": 1.7,
+        "sell_pct": 50
+      },
+      {
+        "multiplier": 2.5,
+        "sell_pct": 30
+      },
+      {
+        "multiplier": 4.0,
+        "sell_pct": 20
+      }
+    ],
+    "sl_pct": -25,
+    "price_1h": null,
+    "price_6h": null,
+    "price_24h": null,
+    "multiplier_1h": null,
+    "multiplier_24h": null,
+    "result": null,
+    "profit_eur": null
+  }
+}

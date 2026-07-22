@@ -1,5 +1,6 @@
-# utils/helpers.py — v1.0
+# utils/helpers.py — v1.0 (corrigé encoding utf-8)
 # Fonctions utilitaires partagées entre tous les modules
+
 
 import re
 import time
@@ -9,6 +10,7 @@ from typing import Any
 # ══════════════════════════════════════════
 # FORMATAGE NOMBRES
 # ══════════════════════════════════════════
+
 
 def fmt_number(num: Any, decimals: int = 1) -> str:
     """
@@ -98,6 +100,7 @@ def fmt_age(age_minutes: float) -> str:
 # VALIDATION ADRESSES SOLANA
 # ══════════════════════════════════════════
 
+
 BASE58_CHARS = frozenset(
     "123456789ABCDEFGHJKLMNPQRSTUVWXYZ"
     "abcdefghijkmnopqrstuvwxyz"
@@ -135,7 +138,8 @@ def is_stablecoin_or_native(address: str) -> bool:
 # MARKDOWN TELEGRAM
 # ══════════════════════════════════════════
 
-_MD_SPECIAL = frozenset(r"\_*[]()~`>#+-=|{}.!")
+
+MD_SPECIAL = frozenset(r"_*[]()~`>#+-=|{}.!")
 
 
 def escape_markdown(text: Any) -> str:
@@ -147,7 +151,7 @@ def escape_markdown(text: Any) -> str:
         return ""
     result = ""
     for char in str(text):
-        if char in _MD_SPECIAL:
+        if char in MD_SPECIAL:
             result += "\\" + char
         else:
             result += char
@@ -158,7 +162,7 @@ def strip_markdown(text: str) -> str:
     """Supprime tous les caractères Markdown d'un texte (fallback)."""
     if not text:
         return ""
-    text = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!])', r'\1', text)
+    text = re.sub(r'\\([_*\[\]()~`>#+\-=|{}.!])', r'\1', text)
     text = re.sub(r'[*_`]', '', text)
     return text.strip()
 
@@ -166,6 +170,7 @@ def strip_markdown(text: str) -> str:
 # ══════════════════════════════════════════
 # GESTION DU TEMPS
 # ══════════════════════════════════════════
+
 
 def now_ts() -> float:
     """Retourne le timestamp actuel."""
@@ -185,6 +190,7 @@ def age_from_ts(timestamp: float) -> float:
 # ══════════════════════════════════════════
 # SAFE GETTERS
 # ══════════════════════════════════════════
+
 
 def safe_float(value: Any, default: float = 0.0) -> float:
     """Convertit une valeur en float sans planter."""
@@ -227,6 +233,7 @@ def safe_list(value: Any) -> list:
 # CALCULS TRADING
 # ══════════════════════════════════════════
 
+
 def calc_multiplier(price_entry: float, price_current: float) -> float:
     """Calcule le multiplicateur entre deux prix."""
     if not price_entry or price_entry <= 0:
@@ -250,7 +257,7 @@ def calc_pnl_eur(amount_eur: float, multiplier: float) -> float:
 def calc_buy_ratio(buys: Any, sells: Any) -> float:
     """Calcule le ratio buys/sells. Protège contre sells=0."""
     try:
-        b = float(buys  or 0)
+        b = float(buys or 0)
         s = float(sells or 0)
         return round(b / max(s, 1), 2)
     except (TypeError, ValueError):
@@ -262,8 +269,8 @@ def calc_vol_acceleration(
 ) -> float:
     """Calcule l'accélération du volume."""
     try:
-        v5m  = float(vol_5m  or 0)
-        v1h  = float(vol_1h  or 0)
+        v5m  = float(vol_5m or 0)
+        v1h  = float(vol_1h or 0)
         v24h = float(vol_24h or 0)
 
         avg_hourly = v24h / 24 if v24h > 0 else 0
@@ -281,6 +288,7 @@ def calc_vol_acceleration(
 # ══════════════════════════════════════════
 # NETTOYAGE DICTIONNAIRES
 # ══════════════════════════════════════════
+
 
 def trim_dict_by_timestamp(
     d: dict, max_size: int, keep: int, ts_key: str = None
@@ -308,7 +316,7 @@ def cleanup_old_entries(
     d: dict, max_age_seconds: float, ts_key: str = None
 ) -> dict:
     """Supprime les entrées plus vieilles que max_age_seconds."""
-    now    = time.time()
+    now   = time.time()
     cutoff = now - max_age_seconds
 
     if ts_key is None:
@@ -321,3 +329,28 @@ def cleanup_old_entries(
             k: v for k, v in d.items()
             if isinstance(v, dict) and v.get(ts_key, 0) > cutoff
         }
+
+
+# ══════════════════════════════════════════
+# CONFIG HASH (pour versioning)
+# ══════════════════════════════════════════
+
+import hashlib
+import json
+from pathlib import Path
+
+
+def get_config_hash() -> str:
+    """Hash de la config actuelle pour versioning."""
+    config_files = [
+        "config/settings.py",
+        "config/strategy.py",
+        "config/keywords.py",
+        "data/optimized_config.json",
+    ]
+    content = ""
+    for f in config_files:
+        p = Path(f)
+        if p.exists():
+            content += p.read_text(encoding="utf-8")  # ← FIX ENCODING
+    return hashlib.md5(content.encode()).hexdigest()[:16]
