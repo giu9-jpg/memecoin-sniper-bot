@@ -1,18 +1,14 @@
-# modules/decision_engine.py — v6.2 FIXED
+# modules/decision_engine.py — v6.4 HIGH CONVICTION
 # ═══════════════════════════════════════════════
-# FIX v6.2 :
-# - MC = 0 accepté si token < 10 min (bonding curve)
-# - Holders < 20 accepté si token < 15 min
-# - Liquidité 0 tolérée si token < 10 min (Pump.fun)
-# - Tier NORMAL abaissé à 7.0 pour plus d'alertes
-# - Tier NORMAL sans smart_count requis
-# - Logs détaillés pour debug
-# FIX AUDIT :
-# - buttons sérialisés correctement dans _send_telegram (via alert_sender)
-# - _ignore() retourne dict complet et cohérent
+# v6.4 :
+# + Vérifie safety_score avant de donner un tier
+# + ULTIMATE impossible sans safety ≥ 7.0
+# + ULTIMATE impossible si liq $0
+# + Exige au moins 1 catalyst de conviction
+# + NORMAL très rare
+# ═══════════════════════════════════════════════
 
 import time
-import json
 from utils.logger import logger
 
 
@@ -32,7 +28,7 @@ BLACKLISTED_TOKENS = {
     "HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3",
 }
 
-MAX_ALERTS_PER_HOUR = 20
+MAX_ALERTS_PER_HOUR = 15  # réduit de 20 à 15
 
 
 class DecisionEngine:
@@ -55,7 +51,17 @@ class DecisionEngine:
         age_minutes  = float(data.get("age_minutes", 0))
         holders      = int(data.get("holders", 0))
 
-        # ── FILTRE MARKET CONTEXT ─────────────────────
+        # Récupère le safety score depuis les données
+        safety       = data.get("safety", {}) or {}
+        safety_score = float(safety.get("score", 0) or 0)
+
+        # Catalysts de conviction
+        alpha_count = int(data.get("alpha_wallets", 0) or 0)
+        has_twitter = bool(data.get("twitter_signal"))
+        whale_data  = data.get("whale_inflow", {}) or {}
+        has_whale   = bool(whale_data.get("has_whales", False))
+
+        # ── FILTRE MARKET CONTEXT ─────────────────
         if self.market_context:
             try:
                 market_signal = self.market_context.get_market_signal()
@@ -66,7 +72,7 @@ class DecisionEngine:
             except Exception as e:
                 logger.debug(f"[DECISION] Market context error: {e}")
 
-        # ── FILTRES ABSOLUS ───────────────────────────
+        # ── FILTRES ABSOLUS ───────────────────────
         if not address:
             return self._ignore("Adresse vide")
 
@@ -82,61 +88,90 @@ class DecisionEngine:
         if freeze_auth:
             return self._ignore("Freeze authority active")
 
-        if top10_pct > 90:
+        if top10_pct > 85:
             return self._ignore(f"Top 10 trop concentré: {top10_pct:.0f}%")
 
         if market_cap > 10_000_000:
             return self._ignore(f"MC trop élevé: ${market_cap:,.0f}")
 
-        # ── FILTRE MC = 0 (tolérant pour nouveaux tokens) ──
-        if market_cap == 0 and age_minutes > 10:
+        # v6.4 : safety minimum
+        if safety_score < 5.5:
             return self._ignore(
-                f"MC = 0 après {age_minutes:.0f}min (données invalides)"
+                f"Safety insuffisant: {safety_score:.1f}/10 < 5.5"
             )
 
-        # ── FILTRE HOLDERS (tolérant si jeune) ─────────
-        if holders < 20 and age_minutes > 15:
+        # v6.4 : liquidité minimum
+        if liquidity == 0 and age_minutes > 8:
             return self._ignore(
-                f"Trop peu de holders: {holders} (age: {age_minutes:.0f}min)"
+                f"Liquidité $0 après {age_minutes:.0f}min"
             )
 
-        # ── FILTRE LIQUIDITÉ (tolérant si jeune) ────────
-        if age_minutes >= 10:
-            if liquidity < 3_000:
-                return self._ignore(
-                    f"Liquidité trop faible: ${liquidity:.0f} (age: {age_minutes:.0f}min)"
-                )
+        if liquidity < 3_000 and age_minutes > 10:
+            return self._ignore(
+                f"Liquidité trop faible: ${liquidity:.0f}"
+            )
 
-        # ── ANTI-SPAM ─────────────────────────────────
+        # Anti-spam
         if not self._check_antispam(address):
             return self._ignore("Anti-spam: déjà alerté récemment")
 
-        # ── TIER ──────────────────────────────────────
-        tier = self._get_tier(score, smart_count, has_critical)
+        # ── CONVICTION CHECK ──────────────────────
+        conviction_count = 0
+        conviction_reasons = []
+
+        if alpha_count >= 1:
+            conviction_count += 2
+            conviction_reasons.append(f"{alpha_count} alpha wallet(s)")
+        if has_twitter:
+            conviction_count += 1
+            conviction_reasons.append("signal Twitter")
+        if has_whale:
+            conviction_count += 1
+            conviction_reasons.append("whale inflow")
+        if has_critical:
+            conviction_count += 1
+            conviction_reasons.append("signal critique")
+        if smart_count >= 3:
+            conviction_count += 1
+            conviction_reasons.append(f"{smart_count} smart signals")
+
+        # ── TIER v6.4 ─────────────────────────────
+        tier = self._get_tier(
+            score, safety_score, smart_count, has_critical,
+            conviction_count, alpha_count, liquidity, age_minutes
+        )
 
         if tier == "IGNORE":
-            return self._ignore(f"Score insuffisant: {score:.1f}/10")
+            return self._ignore(
+                f"Score/safety/conviction insuffisants: "
+                f"score={score:.1f} safety={safety_score:.1f} "
+                f"conv={conviction_count}"
+            )
 
-        # ── STRATÉGIE ─────────────────────────────────
         strategy   = self._get_strategy(market_cap)
         amount_eur = self._get_amount(tier)
         tp_levels  = strategy["tp_levels"]
         sl_pct     = strategy["sl_pct"]
 
-        # ── CALCUL PROFIT ESPÉRÉ ──────────────────────
         if tp_levels and amount_eur > 0:
             weighted_return = sum(
                 tp["multiplier"] * (tp["sell_pct"] / 100)
                 for tp in tp_levels
             )
             profit_pct = (weighted_return - 1) * 100
-            profit_eur = round(amount_eur * weighted_return - amount_eur, 2)
+            profit_eur = round(
+                amount_eur * weighted_return - amount_eur, 2
+            )
         else:
             profit_pct = 0.0
             profit_eur = 0.0
 
-        # ── ENREGISTREMENT ────────────────────────────
         self._register_alert(address)
+
+        conv_text = (
+            ", ".join(conviction_reasons)
+            if conviction_reasons else "aucun"
+        )
 
         return {
             "action":              "ACHÈTE",
@@ -149,29 +184,63 @@ class DecisionEngine:
             "strategy_name":       strategy["name"],
             "reason": (
                 f"Score {score:.1f}/10 | "
-                f"{smart_count} smart signals | "
-                f"tier {tier}"
+                f"Safety {safety_score:.1f}/10 | "
+                f"Conv {conviction_count}: {conv_text}"
             ),
+            "conviction_count":   conviction_count,
+            "conviction_reasons": conviction_reasons,
         }
-
-    # ═══════════════════════════════════════════════════
-    # TIER v6.2
-    # ═══════════════════════════════════════════════════
 
     def _get_tier(
         self,
-        score:       float,
+        score: float,
+        safety_score: float,
         smart_count: int,
         has_critical: bool,
+        conviction_count: int,
+        alpha_count: int,
+        liquidity: float,
+        age_minutes: float,
     ) -> str:
-        if score >= 9.5 and (smart_count >= 3 or has_critical):
+        """
+        v6.4 : Tiers basés sur score + safety + conviction
+        """
+        # ULTIMATE : score élevé + safety correct + liq visible + conviction
+        if (
+            score >= 8.5
+            and safety_score >= 7.0
+            and liquidity >= 8_000
+            and conviction_count >= 1
+        ):
             return "ULTIMATE"
-        if score >= 8.5:
+
+        # STRONG : bon score + safety ok + conviction
+        if (
+            score >= 7.8
+            and safety_score >= 6.5
+            and (conviction_count >= 1 or smart_count >= 3)
+            and liquidity >= 5_000
+        ):
             return "STRONG"
-        if score >= 7.5:
+
+        # GOOD : score correct + safety ok
+        if (
+            score >= 7.2
+            and safety_score >= 6.0
+            and (conviction_count >= 1 or smart_count >= 2)
+            and liquidity >= 3_000
+        ):
             return "GOOD"
-        if score >= 7.0:
+
+        # NORMAL : très rare maintenant
+        if (
+            score >= 7.0
+            and safety_score >= 6.0
+            and conviction_count >= 1
+            and liquidity >= 3_000
+        ):
             return "NORMAL"
+
         return "IGNORE"
 
     def _get_amount(self, tier: str) -> float:
@@ -242,8 +311,7 @@ class DecisionEngine:
 
         if len(self.hourly_alerts) >= MAX_ALERTS_PER_HOUR:
             logger.warning(
-                f"[ANTISPAM] Limite horaire atteinte "
-                f"({MAX_ALERTS_PER_HOUR}/h)"
+                f"[ANTISPAM] Limite horaire atteinte ({MAX_ALERTS_PER_HOUR}/h)"
             )
             return False
 
@@ -273,4 +341,6 @@ class DecisionEngine:
             "sl_pct":              0,
             "strategy_name":       "NONE",
             "reason":              reason,
+            "conviction_count":    0,
+            "conviction_reasons":  [],
         }

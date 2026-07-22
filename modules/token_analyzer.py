@@ -1,6 +1,15 @@
-# modules/token_analyzer.py — v9.1 FIXED FINAL
-# FIX : ajout du champ "price" dans le return (alias de "price_usd")
-#       pour compatibilité avec alert_sender et main.py
+# modules/token_analyzer.py — v9.2 CALIBRÉ
+# ═══════════════════════════════════════════════
+# v9.2 :
+# + LIMITE les bonus volume/momentum
+#   (vol x182 ne donne plus 10/10 automatiquement)
+# + PÉNALISE fortement liq $0 dans le score
+# + PÉNALISE top holder concentré dans le score
+# + PÉNALISE 0 holders dans le score
+# + Score reflète maintenant la QUALITÉ, pas juste le pump
+# + Plafond de bonus volume à +2.0 max (était illimité)
+# + Plafond momentum à +2.0 max
+# ═══════════════════════════════════════════════
 
 import aiohttp
 import asyncio
@@ -60,20 +69,25 @@ class TokenAnalyzer:
         age_minutes      = dex_data.get("age_minutes", 9999)
         holders          = dex_data.get("holders", 0)
 
-        mint_renounced   = rug_data.get("mint_renounced", False)
-        lp_locked        = rug_data.get("lp_locked", False)
-        freeze_auth      = rug_data.get("freeze_authority", False)
-        top10_pct        = rug_data.get("top_10_holders_pct", 0)
-        is_honeypot      = rug_data.get("is_honeypot", False)
+        mint_renounced = rug_data.get("mint_renounced", False)
+        lp_locked      = rug_data.get("lp_locked", False)
+        freeze_auth    = rug_data.get("freeze_authority", False)
+        top10_pct      = rug_data.get("top_10_holders_pct", 0)
+        is_honeypot    = rug_data.get("is_honeypot", False)
 
+        # ════════════════════════════════════════
+        # SCORE DE BASE : 5.0
+        # Objectif : mesurer la QUALITÉ, pas juste le pump
+        # ════════════════════════════════════════
         score   = 5.0
         reasons = []
 
+        # ── SÉCURITÉ (forte influence négative) ──
         if is_honeypot:
-            score -= 5.0
+            score -= 6.0
             reasons.append("🚨 HONEYPOT DÉTECTÉ")
         if freeze_auth:
-            score -= 2.0
+            score -= 3.0
             reasons.append("🔴 Freeze authority active")
         if top10_pct > 80:
             score -= 3.0
@@ -81,49 +95,73 @@ class TokenAnalyzer:
         elif top10_pct > 50:
             score -= 2.0
             reasons.append(f"🟡 Top 10 : {top10_pct:.0f}%")
+        elif top10_pct > 35:
+            score -= 1.0
+            reasons.append(f"⚠️ Top 10 : {top10_pct:.0f}%")
 
         if not mint_renounced:
-            score -= 2.0
+            score -= 1.5
             reasons.append("🔴 Mint NON renoncé")
         else:
-            score += 1.0
+            score += 0.5
             reasons.append("✅ Mint renoncé")
         if lp_locked:
-            score += 1.0
+            score += 0.5
             reasons.append("✅ Liquidité lockée")
 
-        if market_cap < 50_000:
-            score += 2.0
-            reasons.append(f"🔥 MC ultra low : ${market_cap:,.0f}")
-        elif market_cap < 200_000:
-            score += 1.5
-            reasons.append(f"💎 MC très bas : ${market_cap:,.0f}")
-        elif market_cap < 500_000:
+        # ── LIQUIDITÉ (très important) ─────────────
+        # v9.2 : liq $0 pénalisée directement dans le score
+        if liquidity == 0:
+            score -= 2.0
+            reasons.append("🔴 Liquidité $0 (bonding curve)")
+        elif liquidity < 5_000:
+            score -= 2.5
+            reasons.append(f"🔴 Liq très faible : ${liquidity:,.0f}")
+        elif liquidity < 10_000:
+            score -= 1.0
+            reasons.append(f"⚠️ Liq faible : ${liquidity:,.0f}")
+        elif liquidity < 20_000:
+            score += 0.3
+        elif liquidity > 50_000:
             score += 1.0
-            reasons.append(f"✅ MC bas : ${market_cap:,.0f}")
-        elif market_cap < 2_000_000:
+            reasons.append(f"✅ Bonne liq : ${liquidity:,.0f}")
+        elif liquidity > 100_000:
+            score += 1.5
+            reasons.append(f"✅ Liq solide : ${liquidity:,.0f}")
+
+        # ── MARKET CAP ──────────────────────────
+        if market_cap < 50_000 and market_cap > 0:
+            score += 1.5
+            reasons.append(f"🔥 MC ultra low : ${market_cap:,.0f}")
+        elif market_cap < 200_000 and market_cap > 0:
+            score += 1.0
+            reasons.append(f"💎 MC très bas : ${market_cap:,.0f}")
+        elif market_cap < 500_000 and market_cap > 0:
             score += 0.5
-            reasons.append(f"🟡 MC moyen : ${market_cap:,.0f}")
+            reasons.append(f"✅ MC bas : ${market_cap:,.0f}")
         elif market_cap > 10_000_000:
             score -= 2.0
             reasons.append("🔴 MC trop élevé")
 
+        # ── VOLUME ACCELERATION (PLAFONNÉ à +2.0) ──
+        # v9.2 : était illimité, causait des 10/10 automatiques
         vol_acceleration = self._calc_volume_acceleration(
             volume_5m, volume_1h, volume_6h, volume_24h
         )
-        if vol_acceleration >= 3.0:
-            score += 2.5
+        if vol_acceleration >= 5.0:
+            score += 2.0   # PLAFOND — était +2.5 sans limite
             reasons.append(f"🚀 Volume EXPLOSION x{vol_acceleration:.1f}")
+        elif vol_acceleration >= 3.0:
+            score += 1.5
+            reasons.append(f"📈 Volume fort x{vol_acceleration:.1f}")
         elif vol_acceleration >= 2.0:
-            score += 2.0
-            reasons.append(f"📈 Volume hausse x{vol_acceleration:.1f}")
-        elif vol_acceleration >= 1.5:
             score += 1.0
             reasons.append(f"📊 Volume hausse x{vol_acceleration:.1f}")
         elif vol_acceleration < 0.5 and volume_24h > 0:
-            score -= 1.0
+            score -= 0.5
             reasons.append("📉 Volume en baisse")
 
+        # ── BUY/SELL RATIO ────────────────────────
         buys_5m  = txns_5m.get("buys",  0)
         sells_5m = txns_5m.get("sells", 1)
         buys_1h  = txns_1h.get("buys",  0)
@@ -132,96 +170,99 @@ class TokenAnalyzer:
         ratio_1h = buys_1h  / max(sells_1h,  1)
 
         if ratio_5m >= 3 and ratio_1h >= 2:
-            score += 2.5
+            score += 1.5   # était +2.5
             reasons.append(f"🟢 Pression FORTE 5m={ratio_5m:.1f}x")
         elif ratio_5m >= 3:
-            score += 1.5
+            score += 1.0   # était +1.5
             reasons.append(f"🟢 Fort buy 5m : {ratio_5m:.1f}x")
         elif ratio_1h >= 2:
-            score += 1.0
+            score += 0.5   # était +1.0
             reasons.append(f"🟢 Bon buy 1h : {ratio_1h:.1f}x")
         elif ratio_5m < 0.5:
-            score -= 1.5
+            score -= 1.0
             reasons.append(f"🔴 Vente : {ratio_5m:.1f}x")
 
+        # ── MOMENTUM (PLAFONNÉ à +2.0) ─────────────
+        # v9.2 : momentum seul ne peut plus exploser le score
         momentum_signal = self._detect_price_momentum(
             price_change_5m, price_change_1h,
             price_change_6h, price_change_24h,
         )
-        if momentum_signal == "ACCUMULATION":
-            score += 2.0
-            reasons.append("💎 ACCUMULATION détectée")
-        elif momentum_signal == "EARLY_PUMP":
-            score += 2.5
+        if momentum_signal == "EARLY_PUMP":
+            score += 1.5   # était +2.5
             reasons.append("🚀 EARLY PUMP")
         elif momentum_signal == "BREAKOUT":
-            score += 1.5
+            score += 1.0   # était +1.5
             reasons.append("📈 BREAKOUT")
+        elif momentum_signal == "ACCUMULATION":
+            score += 1.5   # était +2.0
+            reasons.append("💎 ACCUMULATION détectée")
         elif momentum_signal == "TROP_TARD":
-            score -= 3.0
+            score -= 2.0
             reasons.append("🔴 TROP TARD")
         elif momentum_signal == "DUMP":
-            score -= 2.0
+            score -= 1.5
             reasons.append("🔴 DUMP")
 
+        # ── MULTI-TIMEFRAME (PLAFONNÉ à +1.5) ──────
         mtf_bonus, mtf_signal = self._analyze_multi_timeframe(
             price_change_5m, price_change_1h,
             price_change_6h, price_change_24h,
         )
+        # Plafonne le bonus MTF
+        mtf_bonus = max(-2.0, min(1.5, mtf_bonus))
         if mtf_bonus != 0:
             score += mtf_bonus
             if mtf_signal:
                 reasons.append(mtf_signal)
 
-        holder_signal = self._analyze_holders(
-            holders, age_minutes, market_cap
-        )
-        if holder_signal == "VIRAL":
-            score += 2.0
-            reasons.append(f"🔥 VIRAL : {holders} holders")
-        elif holder_signal == "BON":
-            score += 1.0
-            reasons.append(f"✅ Bon ratio : {holders}")
-        elif holder_signal == "FAIBLE":
-            score -= 0.5
-            reasons.append(f"⚠️ Peu holders : {holders}")
-
-        if age_minutes < 10:
-            score += 1.5
+        # ── AGE ─────────────────────────────────────
+        # v9.2 : bonus réduits, age seul ne doit pas booster
+        if age_minutes < 5:
+            score += 0.5   # était +1.5
             reasons.append(f"⚡ ULTRA EARLY : {age_minutes:.0f}min")
-        elif age_minutes < 30:
-            score += 2.0
+        elif age_minutes < 15:
+            score += 0.8   # était +2.0
             reasons.append(f"🔥 Très early : {age_minutes:.0f}min")
-        elif age_minutes < 60:
-            score += 1.5
+        elif age_minutes < 30:
+            score += 0.5   # était +1.5
             reasons.append(f"✅ Early : {age_minutes:.0f}min")
-        elif age_minutes < 360:
-            score += 0.5
-            reasons.append(f"⏱️ Récent : {age_minutes/60:.1f}h")
+        elif age_minutes < 60:
+            score += 0.2
         elif age_minutes > 1440:
             score -= 1.0
             reasons.append(f"📅 Vieux : {age_minutes/1440:.1f}j")
 
-        if liquidity > 100_000:
-            score += 2.0
-            reasons.append(f"✅ Liq solide : ${liquidity:,.0f}")
-        elif liquidity > 50_000:
-            score += 1.5
-            reasons.append(f"✅ Bonne liq : ${liquidity:,.0f}")
-        elif liquidity > 20_000:
+        # ── HOLDERS ──────────────────────────────────
+        # v9.2 : 0 holders = grosse pénalité
+        if holders == 0:
+            score -= 1.5
+            reasons.append("⚠️ 0 holders (DexScreener)")
+        elif holders < 20:
+            score -= 0.5
+            reasons.append(f"⚠️ Peu holders : {holders}")
+        elif holders > 100:
+            score += 0.5
+            reasons.append(f"✅ {holders} holders")
+        elif holders > 500:
             score += 1.0
-            reasons.append(f"🟡 Liq OK : ${liquidity:,.0f}")
-        elif liquidity < 5_000:
-            score -= 2.0
-            reasons.append(f"🔴 Liq danger : ${liquidity:,.0f}")
+            reasons.append(f"🔥 {holders} holders")
 
+        # ── SOCIALS ────────────────────────────────
         if dex_data.get("has_socials"):
             score += 0.5
             reasons.append("✅ Socials")
+        else:
+            score -= 0.3
+            reasons.append("⚠️ Pas de socials")
 
+        # Plafond intermédiaire avant smart signals
         score = max(0.0, min(10.0, score))
 
-        # Smart Signals
+        # ════════════════════════════════════════
+        # SMART SIGNALS (plafonné à +1.5)
+        # v9.2 : ne peut plus exploser le score final
+        # ════════════════════════════════════════
         current_data = {
             "price_usd":        price,
             "market_cap":       market_cap,
@@ -245,32 +286,45 @@ class TokenAnalyzer:
         smart_count   = smart_result.get("signal_count", 0)
         has_critical  = smart_result.get("has_critical", False)
 
+        # v9.2 : plafonne le bonus smart signals
+        smart_bonus = min(smart_bonus, 1.5)
         score += smart_bonus
         for sig in smart_signals:
             reasons.append(
                 f"{sig.get('emoji', '⚡')} {sig.get('message', '')}"
             )
 
-        # Alpha Wallets
+        # ════════════════════════════════════════
+        # ALPHA WALLETS (bonus conservé)
+        # ════════════════════════════════════════
         alpha_signal = None
         if self.alpha_tracker:
-            alpha_signal = self.alpha_tracker.get_alpha_signal(token_address)
+            alpha_signal = self.alpha_tracker.get_alpha_signal(
+                token_address
+            )
             if alpha_signal["has_alpha"]:
                 score += alpha_signal["bonus"]
                 reasons.append(f"🐋 {alpha_signal['message']}")
 
-        # Early Detector
+        # ════════════════════════════════════════
+        # EARLY DETECTOR (bonus conservé)
+        # ════════════════════════════════════════
         early_signal = None
         if self.early_detector and age_minutes < 5:
             early_signal = await self.early_detector.analyze_early_token(
                 token_address,
-                {"name": dex_data.get("name"), "symbol": dex_data.get("symbol")},
+                {
+                    "name":   dex_data.get("name"),
+                    "symbol": dex_data.get("symbol"),
+                },
             )
             if early_signal.get("bonus", 0) > 0:
                 score += early_signal["bonus"]
                 reasons.append(early_signal["message"])
 
-        # Whale Inflow
+        # ════════════════════════════════════════
+        # WHALE INFLOW (bonus conservé)
+        # ════════════════════════════════════════
         whale_inflow_signal = None
         if self.whale_inflow:
             whale_inflow_signal = await self.whale_inflow.check_token_inflows(
@@ -280,6 +334,7 @@ class TokenAnalyzer:
                 score += whale_inflow_signal["bonus"]
                 reasons.append(whale_inflow_signal["message"])
 
+        # Plafond final
         score = max(0.0, min(10.0, score))
 
         signal_type = self._get_signal_type(
@@ -291,7 +346,6 @@ class TokenAnalyzer:
             "address":            token_address,
             "name":               dex_data.get("name", "Unknown"),
             "symbol":             dex_data.get("symbol", "???"),
-            # FIX : "price" ET "price_usd" tous les deux présents
             "price":              price,
             "price_usd":          price,
             "market_cap":         market_cap,
@@ -343,7 +397,7 @@ class TokenAnalyzer:
         self, vol_5m, vol_1h, vol_6h, vol_24h
     ) -> float:
         try:
-            avg_hourly   = vol_24h / 24 if vol_24h > 0 else 0
+            avg_hourly = vol_24h / 24 if vol_24h > 0 else 0
             if avg_hourly == 0:
                 return 1.0
             recent_rate  = vol_1h / avg_hourly if vol_1h > 0 else 0
@@ -382,23 +436,23 @@ class TokenAnalyzer:
             abs(change_24h) < 30 and abs(change_6h) < 20
             and change_1h > 15 and change_5m > 5
         ):
-            return 2.5, "🎯 BREAKOUT depuis consolidation"
+            return 1.5, "🎯 BREAKOUT depuis consolidation"
         if (
             0 < change_24h < 100 and 0 < change_6h < 50
             and 0 < change_1h < 30 and change_5m > 0
         ):
-            return 2.0, "💎 Accumulation multi-TF alignée"
+            return 1.0, "💎 Accumulation multi-TF alignée"
         if (
             change_5m > 10 and change_1h > 20
             and change_6h > 30 and change_24h < 500
         ):
-            return 3.0, "🚀 Momentum ALIGNÉ tous TF"
+            return 1.5, "🚀 Momentum ALIGNÉ tous TF"
         if change_24h < -40 and change_1h > 10:
-            return -2.0, "🔴 Dead cat bounce détecté"
+            return -1.5, "🔴 Dead cat bounce détecté"
         if change_24h > 500 and change_1h < 0:
-            return -1.5, "🔴 Pump épuisé"
+            return -1.0, "🔴 Pump épuisé"
         if 0 < change_5m < 20 and change_1h > 5 and change_24h < 200:
-            return 1.0, "📈 Early momentum"
+            return 0.5, "📈 Early momentum"
         return 0.0, ""
 
     def _analyze_holders(
