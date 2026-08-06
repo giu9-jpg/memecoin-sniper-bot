@@ -1,342 +1,685 @@
-# modules/evolution/auto_ml.py
 """
-Pipeline Auto-ML continu.
-- Déclencheur: nouveaux labels disponibles
-- Entraîne challengers vs champion
-- Validation walk-forward + purged K-fold
-- Promotion si amélioration significative
-- Versioning modèles + rollback automatique
+MemeSniper v14.1-EVOLUTION
+Auto-ML robuste Railway/local
+
+Important :
+- N'importe AUCUN LightGBM au démarrage.
+- N'importe AUCUN XGBoost au démarrage.
+- Si sklearn/joblib sont disponibles : entraînement simple RandomForest.
+- Si les libs ML ne sont pas disponibles : fallback heuristique.
+- Ne doit jamais faire crasher le bot principal.
+- Alertes + paper trading uniquement, aucun trading automatique.
 """
+
+from __future__ import annotations
+
 import json
-import time
-import hashlib
-import pickle
+import math
+import os
 import threading
 from dataclasses import dataclass, field
-from typing import Any
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from datetime import datetime
-from collections import deque
+from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
-import pandas as pd
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import log_loss, roc_auc_score, average_precision_score
-import xgboost as xgb
-import lightgbm as lgb
+from .event_store import get_event_store, log_event
 
-from modules.evolution.feature_store import get_feature_store
-from modules.evolution.event_store import get_event_store, log_event
 
-MODEL_VERSION = "4.0"
-MIN_TRADES_FOR_TRAIN = 100
-MIN_TRADES_FOR_PROMOTION = 50
-PROMOTION_THRESHOLD = 0.05  # +5% sur metric principal
-RETRAIN_INTERVAL_HOURS = 6
-MAX_MODEL_AGE_DAYS = 30
+JsonDict = Dict[str, Any]
+
+
+class AwaitableDict(dict):
+    """
+    Petit helper de compatibilité.
+
+    Permet que le résultat fonctionne dans les deux cas :
+        result = maybe_retrain()
+        result = await maybe_retrain()
+    """
+
+    def __await__(self):
+        async def _coro():
+            return self
+
+        return _coro().__await__()
+
+
+def _result(payload: Dict[str, Any]) -> AwaitableDict:
+    return AwaitableDict(payload)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _env_bool(name: str, default: bool = True) -> bool:
+    value = os.getenv(name)
+
+    if value is None:
+        return default
+
+    return str(value).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return default
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None or value == "":
+            return default
+
+        value = float(value)
+
+        if math.isnan(value) or math.isinf(value):
+            return default
+
+        return value
+    except Exception:
+        return default
+
+
+def _safe_json_load(path: Path) -> JsonDict:
+    try:
+        if not path.exists():
+            return {}
+
+        data = json.loads(path.read_text(encoding="utf-8"))
+
+        if isinstance(data, dict):
+            return data
+
+        return {}
+    except Exception:
+        return {}
+
+
+def _safe_json_save(path: Path, payload: JsonDict) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
 
 @dataclass
-class ModelMetrics:
-    model_id: str
-    model_type: str           # "xgb", "lgb", "ensemble"
-    trained_at: float
-    train_samples: int
-    val_samples: int
-    metrics: dict             # {horizon: {logloss, auc, pr_auc, sharpe}}
-    feature_importance: dict
-    config_hash: str          # Hash de la config d'entraînement
+class AutoMLConfig:
+    enabled: bool = field(default_factory=lambda: _env_bool("EVOLUTION_AUTOML_ENABLED", True))
+    min_samples: int = field(default_factory=lambda: _env_int("EVOLUTION_AUTOML_MIN_SAMPLES", 20))
+    lookback_days: int = field(default_factory=lambda: _env_int("EVOLUTION_AUTOML_LOOKBACK_DAYS", 30))
+    retrain_interval_minutes: int = field(
+        default_factory=lambda: _env_int("EVOLUTION_AUTOML_RETRAIN_MINUTES", 120)
+    )
 
-@dataclass 
-class ChampionModel:
-    model_id: str
-    model_object: Any         # Le modèle entraîné (picklé)
-    metrics: ModelMetrics
-    promoted_at: float
-    is_active: bool = True
+    model_path: Path = field(
+        default_factory=lambda: Path("data") / "evolution" / "automl_model.joblib"
+    )
+    metrics_path: Path = field(
+        default_factory=lambda: Path("data") / "evolution" / "automl_metrics.json"
+    )
 
-class AutoMLPipeline:
-    def __init__(self, model_dir: str = "models"):
-        self.model_dir = Path(model_dir)
-        self.model_dir.mkdir(parents=True, exist_ok=True)
-        
-        self.feature_store = get_feature_store()
+    features: List[str] = field(
+        default_factory=lambda: [
+            "score",
+            "safety_score",
+            "social_score",
+            "momentum_score",
+            "liquidity",
+            "market_cap",
+            "volume_24h",
+            "holders",
+            "age_minutes",
+            "buy_ratio",
+        ]
+    )
+
+
+class AutoML:
+    def __init__(self, config: Optional[AutoMLConfig] = None) -> None:
+        self.config = config or AutoMLConfig()
         self.event_store = get_event_store()
-        
-        self.champion: ChampionModel | None = None
-        self.challengers: dict[str, ChampionModel] = {}  # model_id -> model
-        self.training_queue: deque = deque()
-        self._lock = threading.Lock()
-        self._running = False
-        self._last_retrain = 0
-        
-        # Charge le champion actuel si existe
-        self._load_champion()
-    
-    def _load_champion(self):
-        champion_path = self.model_dir / "champion.json"
-        if champion_path.exists():
-            with open(champion_path) as f:
-                data = json.load(f)
-            model_path = self.model_dir / f"{data['model_id']}.pkl"
-            if model_path.exists():
-                with open(model_path, "rb") as f:
-                    model_obj = pickle.load(f)
-                self.champion = ChampionModel(
-                    model_id=data["model_id"],
-                    model_object=model_obj,
-                    metrics=ModelMetrics(**data["metrics"]),
-                    promoted_at=data["promoted_at"]
-                )
-                log_event("model_loaded", "auto_ml", 
-                         model_id=data["model_id"], 
-                         event_type="model_load")
-    
-    def _save_champion(self, champion: ChampionModel):
-        with open(self.model_dir / f"{champion.model_id}.pkl", "wb") as f:
-            pickle.dump(champion.model_object, f)
-        
-        with open(self.model_dir / "champion.json", "w") as f:
-            json.dump({
-                "model_id": champion.model_id,
-                "metrics": champion.metrics.__dict__,
-                "promoted_at": champion.promoted_at
-            }, f)
-    
-    def should_retrain(self) -> bool:
-        """Vérifie si assez de nouveaux données pour réentraîner."""
-        if time.time() - self._last_retrain < RETRAIN_INTERVAL_HOURS * 3600:
-            return False
-        
-        # Compte nouveaux trades labeled depuis dernier entraînement
-        cutoff = self.champion.metrics.trained_at if self.champion else 0
-        new_events = self.event_store.query(
-            start_ts=cutoff,
-            end_ts=time.time(),
-            event_types=["outcome"]
-        )
-        labeled_count = sum(1 for e in new_events if e.outcome.get("labeled", False))
-        return labeled_count >= MIN_TRADES_FOR_TRAIN
-    
-    def trigger_retrain(self):
-        """Lance réentraînement asynchrone."""
-        if self._running:
-            return
-        self._running = True
-        threading.Thread(target=self._retrain_loop, daemon=True).start()
-    
-    def _retrain_loop(self):
+        self._lock = threading.RLock()
+
+        self.model: Any = None
+        self.model_loaded: bool = False
+        self.last_metrics: JsonDict = _safe_json_load(self.config.metrics_path)
+
+        self.config.model_path.parent.mkdir(parents=True, exist_ok=True)
+        self.config.metrics_path.parent.mkdir(parents=True, exist_ok=True)
+
+        self._load_model_safely()
+
+    def _load_model_safely(self) -> None:
+        """
+        Charge le modèle si joblib existe.
+        Si ça échoue, on continue en fallback heuristique.
+        """
         try:
-            log_event("retrain_started", "auto_ml", event_type="model_train")
-            
-            # 1. Prépare données d'entraînement
-            X, y_dict = self._prepare_training_data()
-            if len(X) < MIN_TRADES_FOR_TRAIN:
-                log_event("retrain_skipped", "auto_ml", 
-                         reason=f"insufficient_data_{len(X)}", event_type="model_train")
+            if not self.config.model_path.exists():
                 return
-            
-            # 2. Entraîne plusieurs challengers
-            challengers = self._train_challengers(X, y_dict)
-            
-            # 3. Évalue sur validation walk-forward
-            best_challenger = self._evaluate_challengers(challengers, X, y_dict)
-            
-            # 4. Compare au champion
-            if self._should_promote(best_challenger):
-                self._promote_challenger(best_challenger)
-                log_event("model_promoted", "auto_ml",
-                         new_champion=best_challenger.model_id,
-                         event_type="model_promotion")
-            else:
-                log_event("challenger_rejected", "auto_ml",
-                         challenger=best_challenger.model_id,
-                         event_type="model_rejection")
-            
-            self._last_retrain = time.time()
-            
-        except Exception as e:
-            log_event("retrain_failed", "auto_ml", error=str(e), event_type="model_error")
-        finally:
-            self._running = False
-    
-    def _prepare_training_data(self) -> tuple[np.ndarray, dict[str, np.ndarray]]:
-        """Charge et prépare données depuis feature store."""
-        # Utilise feature_store.load_training_data
-        # Pour l'instant, version simplifiée
-        end_ts = time.time()
-        start_ts = end_ts - (MAX_MODEL_AGE_DAYS * 86400)
-        
-        events = self.event_store.query(start_ts, end_ts, event_types=["detection", "outcome"])
-        
-        # Joint detections + outcomes par token_mint + timestamp approximatif
-        detections = [e for e in events if e.event_type == "detection"]
-        outcomes = {e.token_mint: e.outcome for e in events if e.event_type == "outcome"}
-        
-        X_list = []
-        y_dict = defaultdict(list)
-        
-        for det in detections:
-            if det.token_mint not in outcomes:
+
+            import joblib  # type: ignore
+
+            self.model = joblib.load(self.config.model_path)
+            self.model_loaded = True
+
+        except Exception as exc:
+            self.model = None
+            self.model_loaded = False
+
+            self.last_metrics = {
+                "status": "model_load_failed",
+                "error": str(exc),
+                "fallback": "heuristic",
+                "updated_at": _utc_now().isoformat(),
+            }
+
+            _safe_json_save(self.config.metrics_path, self.last_metrics)
+
+    def _extract_from_event(self, event: JsonDict, name: str) -> float:
+        meta = event.get("meta") or {}
+
+        if not isinstance(meta, dict):
+            meta = {}
+
+        if name in event:
+            return _safe_float(event.get(name), 0.0)
+
+        if name in meta:
+            return _safe_float(meta.get(name), 0.0)
+
+        aliases = {
+            "safety_score": ["safety", "token_safety_score", "safetyScore"],
+            "social_score": ["social", "twitter_score", "socialScore"],
+            "momentum_score": ["momentum", "momentum_detector_score", "momentumScore"],
+            "volume_24h": ["volume", "volume24h", "volume_usd", "volumeUsd"],
+            "market_cap": ["mcap", "marketcap", "market_cap_usd", "marketCap"],
+            "age_minutes": ["age", "token_age_minutes", "ageMinutes"],
+            "buy_ratio": ["buyRatio", "buy_ratio_pct", "buyers_ratio"],
+            "holders": ["holder_count", "holders_count"],
+        }
+
+        for alias in aliases.get(name, []):
+            if alias in event:
+                return _safe_float(event.get(alias), 0.0)
+
+            if alias in meta:
+                return _safe_float(meta.get(alias), 0.0)
+
+        return 0.0
+
+    def _vector_from_event(self, event: JsonDict) -> List[float]:
+        vector: List[float] = []
+
+        for feature in self.config.features:
+            value = self._extract_from_event(event, feature)
+
+            # Compression douce pour les grosses valeurs
+            if feature in ("liquidity", "market_cap", "volume_24h", "holders"):
+                value = math.log1p(max(value, 0.0))
+
+            vector.append(float(value))
+
+        return vector
+
+    def _vector_from_mapping(self, payload: JsonDict) -> List[float]:
+        event = {
+            **payload,
+            "meta": payload.get("meta", payload),
+        }
+        return self._vector_from_event(event)
+
+    def _label_from_event(self, event: JsonDict) -> Optional[int]:
+        meta = event.get("meta") or {}
+
+        if not isinstance(meta, dict):
+            meta = {}
+
+        outcome = str(event.get("outcome") or meta.get("outcome") or "").lower()
+
+        if outcome in ("win", "winner", "profit", "tp", "take_profit", "success"):
+            return 1
+
+        if outcome in ("loss", "loser", "sl", "stop_loss", "rug", "fail", "failed"):
+            return 0
+
+        pnl = _safe_float(
+            event.get("pnl_pct"),
+            _safe_float(meta.get("pnl_pct"), _safe_float(meta.get("paper_pnl_pct"), 0.0)),
+        )
+
+        if pnl >= 10:
+            return 1
+
+        if pnl <= -10:
+            return 0
+
+        return None
+
+    def _collect_training_data(self) -> Tuple[List[List[float]], List[int]]:
+        since = _utc_now() - timedelta(days=max(1, int(self.config.lookback_days)))
+
+        events: List[JsonDict] = []
+
+        try:
+            if hasattr(self.event_store, "query_events"):
+                events = self.event_store.query_events(
+                    since=since,
+                    limit=20000,
+                    ascending=True,
+                )
+            elif hasattr(self.event_store, "query"):
+                events = self.event_store.query(
+                    since=since,
+                    limit=20000,
+                    ascending=True,
+                )
+        except Exception:
+            events = []
+
+        x_rows: List[List[float]] = []
+        y_rows: List[int] = []
+
+        for event in events:
+            label = self._label_from_event(event)
+
+            if label is None:
                 continue
-            
-            # Reconstruit feature vector depuis event
-            features = det.features
-            X_list.append([features.get(f, 0) for f in sorted(features.keys())])
-            
-            outcome = outcomes[det.token_mint]
-            for horizon in ["1h", "4h", "24h", "7d"]:
-                if horizon in outcome:
-                    y_dict[f"{horizon}_max_roi"].append(outcome[horizon].get("max_roi", 0))
-                    y_dict[f"{horizon}_rugged"].append(outcome[horizon].get("rugged", 0))
-        
-        return np.array(X_list), {k: np.array(v) for k, v in y_dict.items()}
-    
-    def _train_challengers(self, X: np.ndarray, y_dict: dict) -> list[ChampionModel]:
-        """Entraîne plusieurs modèles candidats."""
-        challengers = []
-        feature_names = [f"f_{i}" for i in range(X.shape[1])]
-        
-        # Target principal: rugged à 24h (classification) + max_roi à 24h (regression)
-        y_rugged = y_dict.get("24h_rugged", np.zeros(len(X)))
-        y_roi = y_dict.get("24h_max_roi", np.zeros(len(X)))
-        
-        # Modèle 1: XGBoost Classifier (rug detection)
-        xgb_clf = xgb.XGBClassifier(
-            n_estimators=500, max_depth=6, learning_rate=0.01,
-            subsample=0.8, colsample_bytree=0.8,
-            eval_metric="logloss", random_state=42, n_jobs=-1
+
+            vector = self._vector_from_event(event)
+
+            if not vector:
+                continue
+
+            x_rows.append(vector)
+            y_rows.append(label)
+
+        return x_rows, y_rows
+
+    def _save_metrics(self, metrics: JsonDict) -> None:
+        self.last_metrics = metrics
+        _safe_json_save(self.config.metrics_path, metrics)
+
+    def train(self, force: bool = False) -> AwaitableDict:
+        """
+        Entraîne un petit modèle sklearn si possible.
+        Si sklearn n'est pas disponible, fallback sans crash.
+        """
+        with self._lock:
+            if not self.config.enabled:
+                result = {
+                    "status": "disabled",
+                    "reason": "EVOLUTION_AUTOML_ENABLED=false",
+                    "fallback": "heuristic",
+                }
+                self._save_metrics(result)
+                return _result(result)
+
+            x_rows, y_rows = self._collect_training_data()
+            samples = len(y_rows)
+
+            if samples < self.config.min_samples and not force:
+                result = {
+                    "status": "skipped",
+                    "reason": "not_enough_samples",
+                    "samples": samples,
+                    "required": self.config.min_samples,
+                    "fallback": "heuristic",
+                    "updated_at": _utc_now().isoformat(),
+                }
+
+                self._save_metrics(result)
+
+                log_event(
+                    "automl_training_skipped",
+                    "auto_ml",
+                    status="skipped",
+                    samples=samples,
+                    required=self.config.min_samples,
+                    meta={"reason": "not_enough_samples"},
+                )
+
+                return _result(result)
+
+            if len(set(y_rows)) < 2:
+                result = {
+                    "status": "skipped",
+                    "reason": "only_one_class",
+                    "samples": samples,
+                    "classes": list(sorted(set(y_rows))),
+                    "fallback": "heuristic",
+                    "updated_at": _utc_now().isoformat(),
+                }
+
+                self._save_metrics(result)
+
+                log_event(
+                    "automl_training_skipped",
+                    "auto_ml",
+                    status="skipped",
+                    samples=samples,
+                    meta={"reason": "only_one_class"},
+                )
+
+                return _result(result)
+
+            try:
+                # Import lazy : pas au démarrage du bot.
+                from sklearn.ensemble import RandomForestClassifier  # type: ignore
+                from sklearn.metrics import accuracy_score  # type: ignore
+                from sklearn.model_selection import train_test_split  # type: ignore
+                import joblib  # type: ignore
+
+                test_size = 0.25 if samples >= 12 else 0.33
+
+                try:
+                    x_train, x_test, y_train, y_test = train_test_split(
+                        x_rows,
+                        y_rows,
+                        test_size=test_size,
+                        random_state=42,
+                        stratify=y_rows if min(y_rows.count(0), y_rows.count(1)) >= 2 else None,
+                    )
+                except Exception:
+                    x_train, x_test, y_train, y_test = train_test_split(
+                        x_rows,
+                        y_rows,
+                        test_size=test_size,
+                        random_state=42,
+                    )
+
+                model = RandomForestClassifier(
+                    n_estimators=120,
+                    max_depth=5,
+                    min_samples_leaf=2,
+                    random_state=42,
+                    class_weight="balanced",
+                )
+
+                model.fit(x_train, y_train)
+
+                predictions = model.predict(x_test)
+                accuracy = float(accuracy_score(y_test, predictions)) if y_test else 0.0
+
+                package = {
+                    "model": model,
+                    "features": self.config.features,
+                    "trained_at": _utc_now().isoformat(),
+                    "samples": samples,
+                }
+
+                joblib.dump(package, self.config.model_path)
+
+                self.model = package
+                self.model_loaded = True
+
+                result = {
+                    "status": "trained",
+                    "model": "RandomForestClassifier",
+                    "samples": samples,
+                    "accuracy": accuracy,
+                    "features": self.config.features,
+                    "model_path": str(self.config.model_path),
+                    "updated_at": _utc_now().isoformat(),
+                    "fallback": False,
+                }
+
+                self._save_metrics(result)
+
+                log_event(
+                    "automl_trained",
+                    "auto_ml",
+                    status="trained",
+                    samples=samples,
+                    confidence=accuracy,
+                    meta=result,
+                )
+
+                return _result(result)
+
+            except Exception as exc:
+                # Aucun crash du bot si sklearn/joblib échoue.
+                self.model = None
+                self.model_loaded = False
+
+                result = {
+                    "status": "skipped",
+                    "reason": "training_failed",
+                    "error": str(exc),
+                    "samples": samples,
+                    "fallback": "heuristic",
+                    "updated_at": _utc_now().isoformat(),
+                }
+
+                self._save_metrics(result)
+
+                log_event(
+                    "automl_training_failed",
+                    "auto_ml",
+                    status="error",
+                    samples=samples,
+                    meta={"error": str(exc)},
+                )
+
+                return _result(result)
+
+    def retrain(self, force: bool = False) -> AwaitableDict:
+        return self.train(force=force)
+
+    def run_once(self, force: bool = False) -> AwaitableDict:
+        return self.maybe_retrain(force=force)
+
+    def maybe_retrain(self, force: bool = False) -> AwaitableDict:
+        if force:
+            return self.train(force=True)
+
+        last_trained_at = self.last_metrics.get("updated_at") or self.last_metrics.get("trained_at")
+
+        if last_trained_at:
+            try:
+                last_dt = datetime.fromisoformat(str(last_trained_at).replace("Z", "+00:00"))
+
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+
+                elapsed = _utc_now() - last_dt
+
+                if elapsed < timedelta(minutes=max(1, int(self.config.retrain_interval_minutes))):
+                    return _result(
+                        {
+                            "status": "skipped",
+                            "reason": "too_early",
+                            "last_trained_at": last_dt.isoformat(),
+                            "next_retrain_after_minutes": self.config.retrain_interval_minutes,
+                            "fallback": not self.model_loaded,
+                        }
+                    )
+            except Exception:
+                pass
+
+        return self.train(force=False)
+
+    def _heuristic_predict(self, payload: JsonDict) -> JsonDict:
+        score = _safe_float(payload.get("score"), 0.0)
+
+        meta = payload.get("meta") or {}
+
+        if not isinstance(meta, dict):
+            meta = {}
+
+        safety = _safe_float(
+            payload.get("safety_score"),
+            _safe_float(meta.get("safety_score"), _safe_float(meta.get("safety"), score)),
         )
-        xgb_clf.fit(X, y_rugged)
-        
-        # Modèle 2: LightGBM Regressor (ROI prediction)
-        lgb_reg = lgb.LGBMRegressor(
-            n_estimators=500, max_depth=6, learning_rate=0.01,
-            subsample=0.8, colsample_bytree=0.8,
-            random_state=42, n_jobs=-1, verbose=-1
+
+        social = _safe_float(
+            payload.get("social_score"),
+            _safe_float(meta.get("social_score"), _safe_float(meta.get("social"), 5.0)),
         )
-        lgb_reg.fit(X, y_roi)
-        
-        # Modèle 3: Ensemble (moyenne pondérée)
-        # On créera un wrapper ensemble plus tard
-        
-        for name, model, y_pred in [
-            ("xgb_rug", xgb_clf, xgb_clf.predict_proba(X)[:, 1]),
-            ("lgb_roi", lgb_reg, lgb_reg.predict(X)),
-        ]:
-            model_id = f"{name}_{int(time.time())}_{hashlib.md5(str(model.get_params()).encode()).hexdigest()[:8]}"
-            
-            # Calcule métriques validation (simple holdout pour vitesse)
-            split = int(0.8 * len(X))
-            X_val, y_val_rug, y_val_roi = X[split:], y_rugged[split:], y_roi[split:]
-            y_pred_val = y_pred[split:]
-            
-            metrics = ModelMetrics(
-                model_id=model_id,
-                model_type=name,
-                trained_at=time.time(),
-                train_samples=split,
-                val_samples=len(X) - split,
-                metrics={
-                    "24h": {
-                        "logloss": log_loss(y_val_rug, y_pred_val) if name == "xgb_rug" else None,
-                        "auc": roc_auc_score(y_val_rug, y_pred_val) if name == "xgb_rug" else None,
-                        "mae": np.mean(np.abs(y_val_roi - y_pred_val)) if name == "lgb_roi" else None,
-                    }
-                },
-                feature_importance=dict(zip(feature_names, model.feature_importances_)),
-                config_hash=hashlib.md5(json.dumps(model.get_params(), sort_keys=True).encode()).hexdigest()[:16]
-            )
-            
-            challengers.append(ChampionModel(
-                model_id=model_id,
-                model_object=model,
-                metrics=metrics,
-                promoted_at=0
-            ))
-        
-        return challengers
-    
-    def _evaluate_challengers(self, challengers: list[ChampionModel], 
-                              X: np.ndarray, y_dict: dict) -> ChampionModel:
-        """Walk-forward validation purged."""
-        # Version simplifiée: retourne le meilleur sur validation holdout
-        best = None
-        best_score = -np.inf
-        
-        for ch in challengers:
-            m = ch.metrics.metrics.get("24h", {})
-            if ch.metrics.model_type == "xgb_rug":
-                score = m.get("auc", 0)  # Maximize AUC
+
+        momentum = _safe_float(
+            payload.get("momentum_score"),
+            _safe_float(meta.get("momentum_score"), _safe_float(meta.get("momentum"), 5.0)),
+        )
+
+        confidence = (
+            0.45 * max(min(score / 10.0, 1.0), 0.0)
+            + 0.30 * max(min(safety / 10.0, 1.0), 0.0)
+            + 0.15 * max(min(social / 10.0, 1.0), 0.0)
+            + 0.10 * max(min(momentum / 10.0, 1.0), 0.0)
+        )
+
+        return {
+            "status": "heuristic",
+            "proba_win": float(confidence),
+            "confidence": float(confidence),
+            "model_loaded": False,
+            "fallback": True,
+        }
+
+    def predict(self, payload: Optional[JsonDict] = None, **kwargs: Any) -> JsonDict:
+        payload = payload or {}
+        payload.update(kwargs)
+
+        if not self.model_loaded or not self.model:
+            return self._heuristic_predict(payload)
+
+        try:
+            package = self.model
+
+            if isinstance(package, dict) and "model" in package:
+                model = package["model"]
             else:
-                score = -m.get("mae", 1)  # Minimize MAE
-            
-            if score > best_score:
-                best_score = score
-                best = ch
-        
-        return best
-    
-    def _should_promote(self, challenger: ChampionModel) -> bool:
-        if not self.champion:
-            return True
-        
-        # Compare sur metric principal
-        champ_metric = self.champion.metrics.metrics.get("24h", {})
-        chal_metric = challenger.metrics.metrics.get("24h", {})
-        
-        if challenger.metrics.model_type == "xgb_rug":
-            champ_score = champ_metric.get("auc", 0)
-            chal_score = chal_metric.get("auc", 0)
-            return (chal_score - champ_score) / max(champ_score, 0.001) > PROMOTION_THRESHOLD
-        else:
-            champ_score = champ_metric.get("mae", 1)
-            chal_score = chal_metric.get("mae", 1)
-            return (champ_score - chal_score) / max(champ_score, 0.001) > PROMOTION_THRESHOLD
-    
-    def _promote_challenger(self, challenger: ChampionModel):
-        """Promouvoit le challenger en champion."""
-        challenger.promoted_at = time.time()
-        challenger.is_active = True
-        
-        # Archive ancien champion
-        if self.champion:
-            self.champion.is_active = False
-            archive_path = self.model_dir / "archive" / f"{self.champion.model_id}.json"
-            archive_path.parent.mkdir(exist_ok=True)
-            with open(archive_path, "w") as f:
-                json.dump(self.champion.metrics.__dict__, f)
-        
-        self.champion = challenger
-        self._save_champion(challenger)
-    
-    def predict(self, features: dict) -> dict:
-        """Inférence avec champion actuel."""
-        if not self.champion:
-            return {"p_rug": 0.5, "pred_roi": 0.0, "model_id": "none"}
-        
-        X = np.array([[features.get(f, 0) for f in sorted(features.keys())]])
-        
-        if self.champion.metrics.model_type == "xgb_rug":
-            p_rug = self.champion.model_object.predict_proba(X)[0][1]
-            return {"p_rug": float(p_rug), "model_id": self.champion.model_id}
-        elif self.champion.metrics.model_type == "lgb_roi":
-            pred_roi = self.champion.model_object.predict(X)[0]
-            return {"pred_roi": float(pred_roi), "model_id": self.champion.model_id}
-        
-        return {"model_id": self.champion.model_id}
+                model = package
+
+            vector = self._vector_from_mapping(payload)
+
+            proba_win = 0.5
+
+            if hasattr(model, "predict_proba"):
+                probabilities = model.predict_proba([vector])[0]
+
+                if len(probabilities) >= 2:
+                    proba_win = float(probabilities[1])
+                else:
+                    proba_win = float(probabilities[0])
+            elif hasattr(model, "predict"):
+                pred = model.predict([vector])[0]
+                proba_win = float(pred)
+
+            return {
+                "status": "ok",
+                "proba_win": proba_win,
+                "confidence": proba_win,
+                "model_loaded": True,
+                "fallback": False,
+            }
+
+        except Exception as exc:
+            result = self._heuristic_predict(payload)
+            result["status"] = "fallback_after_predict_error"
+            result["error"] = str(exc)
+            return result
+
+    def predict_proba(self, payload: Optional[JsonDict] = None, **kwargs: Any) -> float:
+        result = self.predict(payload, **kwargs)
+        return float(result.get("proba_win", result.get("confidence", 0.5)))
+
+    def score_token(self, payload: Optional[JsonDict] = None, **kwargs: Any) -> JsonDict:
+        return self.predict(payload, **kwargs)
+
+    def predict_token(self, payload: Optional[JsonDict] = None, **kwargs: Any) -> JsonDict:
+        return self.predict(payload, **kwargs)
+
+    def get_status(self) -> JsonDict:
+        return {
+            "enabled": self.config.enabled,
+            "model_loaded": self.model_loaded,
+            "model_path": str(self.config.model_path),
+            "metrics_path": str(self.config.metrics_path),
+            "last_metrics": self.last_metrics,
+            "fallback_available": True,
+            "paper_trading_only": True,
+            "auto_trading": False,
+        }
 
 
-# Singleton
-_auto_ml: AutoMLPipeline | None = None
+_AUTO_ML: Optional[AutoML] = None
+_LOCK = threading.RLock()
 
-def get_auto_ml() -> AutoMLPipeline:
-    global _auto_ml
-    if _auto_ml is None:
-        _auto_ml = AutoMLPipeline()
-    return _auto_ml
 
-def maybe_retrain():
-    """Appelé périodiquement (ex: toutes les heures via scheduler)."""
-    ml = get_auto_ml()
-    if ml.should_retrain():
-        ml.trigger_retrain()
+def get_auto_ml() -> AutoML:
+    global _AUTO_ML
+
+    with _LOCK:
+        if _AUTO_ML is None:
+            _AUTO_ML = AutoML()
+
+        return _AUTO_ML
+
+
+def maybe_retrain(*args: Any, **kwargs: Any) -> AwaitableDict:
+    """
+    Fonction globale importée par main.py.
+
+    Compatible :
+        maybe_retrain()
+        await maybe_retrain()
+    """
+    try:
+        force = bool(kwargs.pop("force", False))
+        return get_auto_ml().maybe_retrain(force=force)
+    except Exception as exc:
+        return _result(
+            {
+                "status": "error",
+                "reason": "maybe_retrain_failed",
+                "error": str(exc),
+                "fallback": "heuristic",
+            }
+        )
+
+
+def train_auto_ml(*args: Any, **kwargs: Any) -> AwaitableDict:
+    try:
+        force = bool(kwargs.pop("force", True))
+        return get_auto_ml().train(force=force)
+    except Exception as exc:
+        return _result(
+            {
+                "status": "error",
+                "reason": "train_auto_ml_failed",
+                "error": str(exc),
+                "fallback": "heuristic",
+            }
+        )
+
+
+def predict_token(payload: Optional[JsonDict] = None, **kwargs: Any) -> JsonDict:
+    try:
+        return get_auto_ml().predict_token(payload, **kwargs)
+    except Exception as exc:
+        return {
+            "status": "error",
+            "error": str(exc),
+            "proba_win": 0.5,
+            "confidence": 0.5,
+            "fallback": True,
+        }
+
+
+__all__ = [
+    "AutoMLConfig",
+    "AutoML",
+    "get_auto_ml",
+    "maybe_retrain",
+    "train_auto_ml",
+    "predict_token",
+]
