@@ -1,19 +1,46 @@
-# modules/evolution/__init__.py
 """
-Evolution Package — Auto-improving trading bot infrastructure.
+MemeSniper v14.1-EVOLUTION
+Exports propres du module evolution
 """
-from .event_store import get_event_store, log_event, BotEvent, EventStore
-from .feature_store import get_feature_store, FeatureStore, FeatureVector, LabelSet
-from .auto_ml import get_auto_ml, AutoMLPipeline, ChampionModel, ModelMetrics
-from .strategy_optimizer import get_strategy_optimizer, StrategyOptimizer, StrategyConfig, StrategyPerformance
-from .drift_guard import get_drift_guard, DriftGuard, DriftAlert
-from .evolution_orchestrator import get_orchestrator, EvolutionOrchestrator, start_evolution, stop_evolution
+
+from .event_store import BotEvent, EventStore, get_event_store, log_event
+from .strategy_optimizer import StrategyOptimizer, get_strategy_optimizer
+from .drift_guard import DriftGuard, get_drift_guard
+from .evolution_orchestrator import (
+    EvolutionOrchestrator,
+    get_evolution_orchestrator,
+    start_evolution,
+    stop_evolution,
+)
+
+try:
+    from .feature_store import get_feature_store
+except Exception:
+    def get_feature_store():
+        return None
+
+try:
+    from .auto_ml import get_auto_ml
+except Exception:
+    def get_auto_ml():
+        return None
+
+EVOLUTION_AVAILABLE = True
 
 __all__ = [
-    "get_event_store", "log_event", "BotEvent", "EventStore",
-    "get_feature_store", "FeatureStore", "FeatureVector", "LabelSet",
-    "get_auto_ml", "AutoMLPipeline", "ChampionModel", "ModelMetrics",
-    "get_strategy_optimizer", "StrategyOptimizer", "StrategyConfig", "StrategyPerformance",
-    "get_drift_guard", "DriftGuard", "DriftAlert",
-    "get_orchestrator", "EvolutionOrchestrator", "start_evolution", "stop_evolution",
+    "BotEvent",
+    "EventStore",
+    "get_event_store",
+    "log_event",
+    "get_feature_store",
+    "get_auto_ml",
+    "StrategyOptimizer",
+    "get_strategy_optimizer",
+    "DriftGuard",
+    "get_drift_guard",
+    "EvolutionOrchestrator",
+    "get_evolution_orchestrator",
+    "start_evolution",
+    "stop_evolution",
+    "EVOLUTION_AVAILABLE",
 ]

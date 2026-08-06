@@ -1,201 +1,424 @@
-# modules/evolution/evolution_orchestrator.py
 """
-Chef d'orchestre — coordinate toutes les couches.
-Boucle principale: collecte → features → labels → training → optimization → validation → deployment
+MemeSniper v14.1-EVOLUTION
+Evolution Orchestrator
+
+Objectif :
+- Lancer les boucles Event Store / Optimizer / Drift Guard / Auto-ML
+- Ne jamais casser le bot principal
+- Alertes + paper trading uniquement
+- Aucun trading automatique
 """
+
+from __future__ import annotations
+
 import asyncio
-import time
-import logging
-from datetime import datetime
+import inspect
+import os
+import threading
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
-from modules.evolution.event_store import get_event_store, log_event
-from modules.evolution.feature_store import get_feature_store
-from modules.evolution.auto_ml import get_auto_ml, maybe_retrain
-from modules.evolution.strategy_optimizer import get_strategy_optimizer
-from modules.evolution.drift_guard import get_drift_guard
+from .event_store import get_event_store, log_event
+from .strategy_optimizer import get_strategy_optimizer
+from .drift_guard import get_drift_guard
 
-logger = logging.getLogger(__name__)
+
+JsonDict = Dict[str, Any]
+
+
+def _env_bool(name: str, default: bool = True) -> bool:
+    value = os.getenv(name)
+
+    if value is None:
+        return default
+
+    return str(value).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return default
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+@dataclass
+class EvolutionOrchestratorConfig:
+    enabled: bool = _env_bool("EVOLUTION_ENABLED", True)
+
+    maintenance_interval: int = _env_int("EVOLUTION_MAINTENANCE_INTERVAL", 300)
+    strategy_interval: int = _env_int("EVOLUTION_STRATEGY_INTERVAL", 1800)
+    drift_interval: int = _env_int("EVOLUTION_DRIFT_INTERVAL", 900)
+    report_interval: int = _env_int("EVOLUTION_REPORT_INTERVAL", 3600)
+    automl_interval: int = _env_int("EVOLUTION_AUTOML_INTERVAL", 7200)
+
+    run_strategy_optimizer: bool = _env_bool("EVOLUTION_STRATEGY_ENABLED", True)
+    run_drift_guard: bool = _env_bool("EVOLUTION_DRIFT_ENABLED", True)
+    run_automl: bool = _env_bool("EVOLUTION_AUTOML_ENABLED", True)
+
 
 class EvolutionOrchestrator:
-    """
-    Boucle d'auto-évolution perpétuelle.
-    """
-    
-    def __init__(self):
+    def __init__(self, config: Optional[EvolutionOrchestratorConfig] = None) -> None:
+        self.config = config or EvolutionOrchestratorConfig()
+
         self.event_store = get_event_store()
-        self.feature_store = get_feature_store()
-        self.auto_ml = get_auto_ml()
-        self.strategy_opt = get_strategy_optimizer()
+        self.strategy_optimizer = get_strategy_optimizer()
         self.drift_guard = get_drift_guard()
-        
-        self.running = False
-        self.tasks: list[asyncio.Task] = []
-        
-        # Intervalles (secondes)
-        self.intervals = {
-            "flush_events": 30,           # Flush event store
-            "compute_labels": 300,        # Calcule labels pour détections non labelisées
-            "retrain_check": 3600,        # Vérifie si réentraînement nécessaire
-            "optimize_strategy": 86400,   # Optimisation stratégie (quotidien)
-            "drift_check": 3600,          # Vérification drift (horaire)
-            "compress_events": 86400,     # Compression partitions (quotidien)
-            "report": 21600,              # Rapport santé (6h)
-        }
-    
-    async def start(self):
-        """Démarre toutes les boucles."""
-        if self.running:
-            return
-        
-        self.running = True
-        logger.info("🧬 Evolution Orchestrator STARTED")
-        
-        self.tasks = [
-            asyncio.create_task(self._loop("flush_events", self._flush_events)),
-            asyncio.create_task(self._loop("compute_labels", self._compute_labels_loop)),
-            asyncio.create_task(self._loop("retrain_check", self._retrain_check_loop)),
-            asyncio.create_task(self._loop("optimize_strategy", self._optimize_strategy_loop)),
-            asyncio.create_task(self._loop("drift_check", self._drift_check_loop)),
-            asyncio.create_task(self._loop("compress_events", self._compress_loop)),
-            asyncio.create_task(self._loop("report", self._report_loop)),
-        ]
-        
-        log_event("orchestrator_started", "evolution_orchestrator", event_type="system")
-    
-    async def stop(self):
-        """Arrêt propre."""
-        self.running = False
-        for task in self.tasks:
-            task.cancel()
-        await asyncio.gather(*self.tasks, return_exceptions=True)
-        self.event_store.flush_all()
-        log_event("orchestrator_stopped", "evolution_orchestrator", event_type="system")
-        logger.info("🧬 Evolution Orchestrator STOPPED")
-    
-    async def _loop(self, name: str, coro_func):
-        """Boucle générique avec intervalle."""
-        interval = self.intervals[name]
-        while self.running:
-            try:
-                start = time.time()
-                await coro_func()
-                elapsed = time.time() - start
-                await asyncio.sleep(max(0, interval - elapsed))
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Loop {name} error: {e}")
-                log_event("loop_error", "evolution_orchestrator", 
-                         loop=name, error=str(e), event_type="system_error")
-                await asyncio.sleep(interval)
-    
-    async def _flush_events(self):
-        self.event_store.flush_all()
-    
-    async def _compute_labels_loop(self):
-        """Calcule labels pour toutes les détections non labelisées."""
-        # Récupère events "detection" sans outcome récent
-        end_ts = time.time()
-        start_ts = end_ts - (7 * 86400)  # 7 jours
-        
-        events = self.event_store.query(start_ts, end_ts, event_types=["detection"])
-        unlabeled = [e for e in events if not e.outcome.get("labeled", False)]
-        
-        for event in unlabeled[:100]:  # Batch de 100 max par cycle
-            # Récupère price history depuis simulator / DexScreener
-            price_history = await self._fetch_price_history(event.token_mint, event.timestamp)
-            if price_history:
-                labels = self.feature_store.compute_labels(
-                    event.token_mint, event.timestamp, price_history
+
+        self._tasks: List[asyncio.Task[Any]] = []
+        self._running = False
+        self._lock = threading.RLock()
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+    async def _maybe_await(self, value: Any) -> Any:
+        if inspect.isawaitable(value):
+            return await value
+        return value
+
+    async def start(self) -> "EvolutionOrchestrator":
+        with self._lock:
+            if self._running:
+                return self
+
+            if not self.config.enabled:
+                log_event(
+                    "orchestrator_disabled",
+                    "evolution_orchestrator",
+                    status="disabled",
+                    meta={"reason": "EVOLUTION_ENABLED=false"},
                 )
-                self.feature_store.save_label_set(labels)
-                
-                # Met à jour l'event original
-                event.outcome["labeled"] = True
-                event.outcome["labels"] = labels.labels
-                # Ré-écrit l'event (append nouvelle version)
-                log_event("detection", event.source_module, 
-                         token_mint=event.token_mint,
-                         timestamp=event.timestamp,
-                         features=event.features,
-                         decision=event.decision,
-                         outcome=event.outcome,
-                         meta=event.meta)
-    
-    async def _fetch_price_history(self, token_mint: str, start_ts: float) -> list[dict]:
-        """À connecter à ton simulator / DexScreener cache."""
-        # TODO: implémenter avec modules/simulator.py ou cache DexScreener
-        return []
-    
-    async def _retrain_check_loop(self):
-        maybe_retrain()
-    
-    async def _optimize_strategy_loop(self):
-        """Optimisation quotidienne de la stratégie."""
-        if not self.drift_guard.is_evolution_allowed():
-            logger.info("Strategy optimization skipped: evolution paused by drift guard")
-            return
-        
-        logger.info("🔧 Starting daily strategy optimization...")
-        try:
-            best_config = self.strategy_opt.optimize(n_trials=50, timeout=1800)
-            if best_config:
-                # Applique la nouvelle config (hot reload)
-                await self._apply_config(best_config)
-                log_event("config_updated", "evolution_orchestrator",
-                         config=best_config.to_dict(), event_type="config_change")
-        except Exception as e:
-            logger.error(f"Strategy optimization failed: {e}")
-    
-    async def _apply_config(self, config):
-        """Hot-reload config dans modules actifs."""
-        # Écrit config optimisée
-        import json
-        from pathlib import Path
-        Path("data/optimized_config.json").write_text(json.dumps(config.to_dict(), indent=2))
-        
-        # Notifie modules (via event bus ou callback)
-        log_event("config_reload_requested", "evolution_orchestrator", event_type="config_change")
-    
-    async def _drift_check_loop(self):
-        alerts = self.drift_guard.check_health()
-        if alerts:
-            logger.warning(f"Drift check: {len(alerts)} alerts raised")
-    
-    async def _compress_loop(self):
-        self.event_store.compress_old_partitions(days_old=1)
-    
-    async def _report_loop(self):
-        """Rapport de santé périodique."""
-        status = {
-            "timestamp": time.time(),
-            "champion_model": self.auto_ml.champion.model_id if self.auto_ml.champion else None,
-            "champion_age_days": (time.time() - self.auto_ml.champion.metrics.trained_at) / 86400 if self.auto_ml.champion else None,
-            "trading_paused": self.drift_guard.trading_paused,
-            "evolution_paused": self.drift_guard.auto_evolution_paused,
-            "unacknowledged_alerts": len(self.drift_guard.get_unacknowledged_alerts()),
-            "recent_trades": len(self.drift_guard.recent_trades),
-            "best_strategy_value": self.strategy_opt.study.best_value if self.strategy_opt.study.trials else None,
+                return self
+
+            self._running = True
+
+        log_event(
+            "orchestrator_started",
+            "evolution_orchestrator",
+            status="started",
+            meta={
+                "maintenance_interval": self.config.maintenance_interval,
+                "strategy_interval": self.config.strategy_interval,
+                "drift_interval": self.config.drift_interval,
+                "report_interval": self.config.report_interval,
+                "automl_interval": self.config.automl_interval,
+                "paper_trading_only": True,
+                "auto_trading": False,
+            },
+        )
+
+        self._tasks = [
+            asyncio.create_task(
+                self._loop(
+                    name="maintenance",
+                    interval=self.config.maintenance_interval,
+                    callback=self.maintenance_once,
+                    run_immediately=True,
+                )
+            ),
+            asyncio.create_task(
+                self._loop(
+                    name="report",
+                    interval=self.config.report_interval,
+                    callback=self.report_once,
+                    run_immediately=False,
+                )
+            ),
+        ]
+
+        if self.config.run_strategy_optimizer:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._loop(
+                        name="strategy_optimizer",
+                        interval=self.config.strategy_interval,
+                        callback=self.strategy_once,
+                        run_immediately=False,
+                    )
+                )
+            )
+
+        if self.config.run_drift_guard:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._loop(
+                        name="drift_guard",
+                        interval=self.config.drift_interval,
+                        callback=self.drift_once,
+                        run_immediately=False,
+                    )
+                )
+            )
+
+        if self.config.run_automl:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._loop(
+                        name="automl",
+                        interval=self.config.automl_interval,
+                        callback=self.automl_once,
+                        run_immediately=False,
+                    )
+                )
+            )
+
+        return self
+
+    async def stop(self) -> None:
+        with self._lock:
+            self._running = False
+
+        for task in self._tasks:
+            if not task.done():
+                task.cancel()
+
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+
+        self._tasks = []
+
+        log_event(
+            "orchestrator_stopped",
+            "evolution_orchestrator",
+            status="stopped",
+        )
+
+    async def _loop(
+        self,
+        name: str,
+        interval: int,
+        callback: Any,
+        run_immediately: bool = False,
+    ) -> None:
+        safe_interval = max(15, int(interval or 60))
+
+        log_event(
+            "orchestrator_loop_started",
+            "evolution_orchestrator",
+            status="loop_started",
+            meta={"loop": name, "interval": safe_interval},
+        )
+
+        if not run_immediately:
+            await asyncio.sleep(min(safe_interval, 10))
+
+        while self._running:
+            try:
+                await self._maybe_await(callback())
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log_event(
+                    "orchestrator_loop_error",
+                    "evolution_orchestrator",
+                    status="error",
+                    meta={
+                        "loop": name,
+                        "error": str(exc),
+                    },
+                )
+
+            await asyncio.sleep(safe_interval)
+
+    async def maintenance_once(self) -> JsonDict:
+        stats = self.event_store.aggregate_daily_stats(days=1)
+
+        result = {
+            "status": "ok",
+            "timestamp": _utc_now().isoformat(),
+            "stats": stats,
         }
-        
-        log_event("health_report", "evolution_orchestrator", **status, event_type="report")
-        logger.info(f"📊 Health Report: {status}")
+
+        log_event(
+            "maintenance_tick",
+            "evolution_orchestrator",
+            status="ok",
+            meta=result,
+        )
+
+        return result
+
+    async def strategy_once(self) -> JsonDict:
+        try:
+            result = self.strategy_optimizer.optimize(force=False)
+
+            log_event(
+                "strategy_loop_ok",
+                "evolution_orchestrator",
+                status="ok",
+                meta={"result": result},
+            )
+
+            return {
+                "status": "ok",
+                "result": result,
+            }
+
+        except Exception as exc:
+            log_event(
+                "strategy_loop_error",
+                "evolution_orchestrator",
+                status="error",
+                meta={"error": str(exc)},
+            )
+            return {
+                "status": "error",
+                "error": str(exc),
+            }
+
+    async def drift_once(self) -> JsonDict:
+        try:
+            result = self.drift_guard.check_drift(update_baseline=True)
+
+            log_event(
+                "drift_loop_ok",
+                "evolution_orchestrator",
+                status="ok",
+                meta={"result": result},
+            )
+
+            return {
+                "status": "ok",
+                "result": result,
+            }
+
+        except Exception as exc:
+            log_event(
+                "drift_loop_error",
+                "evolution_orchestrator",
+                status="error",
+                meta={"error": str(exc)},
+            )
+            return {
+                "status": "error",
+                "error": str(exc),
+            }
+
+    async def automl_once(self) -> JsonDict:
+        """
+        Appelle Auto-ML si le module existe.
+        Si Auto-ML n'est pas encore prêt, on log et on continue.
+        """
+        try:
+            from .auto_ml import get_auto_ml  # import lazy volontaire
+
+            auto_ml = get_auto_ml()
+
+            if hasattr(auto_ml, "run_once"):
+                result = await self._maybe_await(auto_ml.run_once())
+            elif hasattr(auto_ml, "train"):
+                result = await self._maybe_await(auto_ml.train())
+            elif hasattr(auto_ml, "retrain"):
+                result = await self._maybe_await(auto_ml.retrain())
+            else:
+                result = {
+                    "status": "skipped",
+                    "reason": "no_supported_method",
+                }
+
+            log_event(
+                "automl_loop_ok",
+                "evolution_orchestrator",
+                status="ok",
+                meta={"result": result},
+            )
+
+            return {
+                "status": "ok",
+                "result": result,
+            }
+
+        except ImportError:
+            result = {
+                "status": "skipped",
+                "reason": "auto_ml_module_unavailable",
+            }
+
+            log_event(
+                "automl_loop_skipped",
+                "evolution_orchestrator",
+                status="skipped",
+                meta=result,
+            )
+
+            return result
+
+        except Exception as exc:
+            log_event(
+                "automl_loop_error",
+                "evolution_orchestrator",
+                status="error",
+                meta={"error": str(exc)},
+            )
+
+            return {
+                "status": "error",
+                "error": str(exc),
+            }
+
+    async def report_once(self) -> JsonDict:
+        stats_1d = self.event_store.aggregate_daily_stats(days=1)
+        stats_7d = self.event_store.aggregate_daily_stats(days=7)
+
+        strategy = self.strategy_optimizer.get_current_strategy()
+
+        result = {
+            "status": "ok",
+            "timestamp": _utc_now().isoformat(),
+            "stats_1d": stats_1d,
+            "stats_7d": stats_7d,
+            "strategy": strategy,
+            "paper_trading_only": True,
+            "auto_trading": False,
+        }
+
+        log_event(
+            "evolution_report",
+            "evolution_orchestrator",
+            status="ok",
+            meta=result,
+        )
+
+        return result
 
 
-# Singleton
-_orchestrator: EvolutionOrchestrator | None = None
+_ORCHESTRATOR: Optional[EvolutionOrchestrator] = None
+_LOCK = threading.RLock()
 
-def get_orchestrator() -> EvolutionOrchestrator:
-    global _orchestrator
-    if _orchestrator is None:
-        _orchestrator = EvolutionOrchestrator()
-    return _orchestrator
 
-async def start_evolution():
-    """Point d'entrée à appeler au démarrage du bot (dans main.py)."""
-    orch = get_orchestrator()
-    await orch.start()
+def get_evolution_orchestrator() -> EvolutionOrchestrator:
+    global _ORCHESTRATOR
 
-async def stop_evolution():
-    orch = get_orchestrator()
-    await orch.stop()
+    with _LOCK:
+        if _ORCHESTRATOR is None:
+            _ORCHESTRATOR = EvolutionOrchestrator()
+        return _ORCHESTRATOR
+
+
+async def start_evolution() -> EvolutionOrchestrator:
+    orchestrator = get_evolution_orchestrator()
+    await orchestrator.start()
+    return orchestrator
+
+
+async def stop_evolution() -> None:
+    global _ORCHESTRATOR
+
+    if _ORCHESTRATOR is not None:
+        await _ORCHESTRATOR.stop()
+
+
+__all__ = [
+    "EvolutionOrchestratorConfig",
+    "EvolutionOrchestrator",
+    "get_evolution_orchestrator",
+    "start_evolution",
+    "stop_evolution",
+]

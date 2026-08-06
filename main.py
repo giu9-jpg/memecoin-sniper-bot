@@ -12,7 +12,7 @@ import json
 import time
 import os
 import aiohttp
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -243,9 +243,9 @@ class MemeSniper:
         self._evolution_started = False
         self._last_config_reload = 0
 
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     # RUN — Point d'entrée principal
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     
     async def run(self):
         self.http_session = aiohttp.ClientSession()
@@ -379,9 +379,9 @@ class MemeSniper:
         
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     # BOUCLES PRINCIPALES
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     
     async def _run_websocket(self):
         try:
@@ -659,9 +659,9 @@ class MemeSniper:
                 logger.error(f"[HEALTH] {e}")
             await asyncio.sleep(HEALTH_CHECK_EVERY)
 
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     # NEW: Evolution Maintenance Loop
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     
     async def _run_evolution_maintenance(self):
         """Boucle maintenance évolution: retrain check, config reload, drift check."""
@@ -675,8 +675,7 @@ class MemeSniper:
                 # 2. Hot-reload optimized_config.json si changé
                 await self._maybe_reload_config()
                 
-                # 3. Drift Guard health check (toutes les heures via orchestrator aussi)
-                # Mais on log ici pour visibilité
+                # 3. Drift Guard health check
                 if not self.drift_guard.is_trading_allowed():
                     logger.warning("[EVOLUTION] ⚠️ Trading PAUSÉ par Drift Guard")
                 if not self.drift_guard.is_evolution_allowed():
@@ -701,15 +700,14 @@ class MemeSniper:
                     self._last_config_reload = mtime
                     with open(config_path) as f:
                         new_config = json.load(f)
-                    # Applique au auto_optimizer
                     self.auto_optimizer.update_config(new_config)
                     logger.info(f"[EVOLUTION] Config hot-reloaded: {new_config}")
         except Exception as e:
             logger.debug(f"[EVOLUTION] Config reload skip: {e}")
 
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     # TELEGRAM COMMANDS — Inchangé v13.5.1 (gardé complet)
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     
     async def _init_telegram_offset(self):
         token = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -857,9 +855,9 @@ class MemeSniper:
         else:
             await self._send_reply(f"❓ Commande inconnue: `{self._esc(text)}`\nTape /help")
 
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     # COMMANDES — Copiées de v13.5.1 (identiques)
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     
     async def _cmd_status(self):
         uptime = int(time.time() - self.start_time)
@@ -890,7 +888,7 @@ class MemeSniper:
         drift_evo = "🛑" if self.drift_guard.auto_evolution_paused else "✅"
         
         msg = (
-            f"🤖 *MemeSniper v14\\.1\\-EVOLUTION*\n"
+            f"🤖 *MemeSniper v14.1-EVOLUTION*\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"⏱ Uptime: `{h}h {m}m {s}s`\n"
             f"🔄 État: *{self._esc(pause_str)}*\n"
@@ -899,28 +897,28 @@ class MemeSniper:
             f"🛡️ Drift Trading: {drift_trading} | Evol: {drift_evo}\n"
             f"🕐 Heure: `{self._esc(hour_label)}` \\(score ≥ `{hour_score}`\\)\n\n"
             f"🎯 *Modules :*\n"
-            f"🛡️ Safety v1\\.4 \\| 🔥 Momentum v1\\.2\n"
-            f"⚡ Speed adaptatif \\| 🐋 Micro whale\n"
-            f"🛡️ SL auto inline \\(défaut \\#1 corrigé\\)\n"
-            f"🎯 Bulls: `{n_bulls}` \\| "
+            f"🛡️ Safety v1.4 | 🔥 Momentum v1.2\n"
+            f"⚡ Speed adaptatif | 🐋 Micro whale\n"
+            f"🛡️ SL auto inline (défaut #1 corrigé)\n"
+            f"🎯 Bulls: `{n_bulls}` | "
             f"💰 Sells: `{sell['positions_open']}` pos\n"
-            f"🛑 SL: `{sell['sl_hits']}` \\| "
+            f"🛑 SL: `{sell['sl_hits']}` | "
             f"🎯 TP: `{sell['tp_hits']}`\n"
-            f"📸 Charts \\| 🔍 Wallets: `{wd['wallets_tracked']}`\n"
+            f"📸 Charts | 🔍 Wallets: `{wd['wallets_tracked']}`\n"
             f"🎯 Optim: `{opt['total_optimizations']}`\n"
             f"💼 Portfolio: `{port['open_positions']}` pos\n"
             f"📉 Dump: `{self.dump_alerts_sent}`\n"
             f"🐋 WSell: `{self.whale_sell_alerts_sent}`\n"
             f"🔔 Watch: `{wl['active_watches']}`\n"
-            f"💰 Trade: `{ta['buys_confirmed']}` buys \\| "
+            f"💰 Trade: `{ta['buys_confirmed']}` buys | "
             f"`{ta['sells_registered']}` sells\n"
-            f"🎮 Sim: `{sim['closed_positions']}` trades \\| "
+            f"🎮 Sim: `{sim['closed_positions']}` trades | "
             f"ROI `{sim['roi_pct']:+.0f}%`\n"
             f"🧠 ML: `{ml.get('trades', 0)}` trades\n\n"
             f"📊 *Activité :*\n"
             f" Analysés: `{self.tokens_analyzed}`\n"
             f" Alertes: `{self.alerts_sent}`\n"
-            f" Fast: `{self.fast_alerts}` \\| "
+            f" Fast: `{self.fast_alerts}` | "
             f"Filtrés heure: `{self.hour_filtered}`\n"
             f" Sell signals: `{self.sell_alerts_sent}`\n"
             f" Copy: `{self.copy_trades}`\n"
@@ -1160,9 +1158,9 @@ class MemeSniper:
         lines.append("💡 `/compare` pour comparer")
         await self._send_reply("\n".join(lines))
 
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     # TRADING COMMANDS
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
 
     async def _cmd_buy(self, args: str):
         parts = args.split()
@@ -1298,9 +1296,9 @@ class MemeSniper:
         )
         await self._send_reply(msg)
 
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     # SIMULATOR
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
 
     async def _cmd_simulate(self):
         stats = self.simulator.get_stats()
@@ -1349,9 +1347,9 @@ class MemeSniper:
         count = self.simulator.reset()
         await self._send_reply(f"✅ *{count} simulations supprimées*\n\nLe simulator est vide.\nNouvelles alertes = nouvelles simulations.")
 
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     # PORTFOLIO
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
 
     async def _cmd_portfolio(self):
         summary = self.portfolio_tracker.get_portfolio_summary()
@@ -1392,9 +1390,9 @@ class MemeSniper:
             lines.append(f"{e} `${sym}` `{pnl_pct:+.0f}%` \\(`{pnl_eur:+.2f}€`\\)")
         await self._send_reply("\n".join(lines))
 
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     # WATCHLIST
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
 
     async def _cmd_watchmc(self, args: str):
         parts = args.split()
@@ -1471,9 +1469,9 @@ class MemeSniper:
             lines.append(f"{type_emoji} `${self._esc(w['symbol'])}` {self._esc(w['type'])} `{w['target']}`")
         await self._send_reply("\n".join(lines))
 
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     # POSITIONS (Sell Signals)
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
 
     async def _cmd_positions(self):
         positions = self.sell_generator.get_positions()
@@ -1544,9 +1542,9 @@ class MemeSniper:
         self.sell_generator.remove_position(target_mint)
         await self._send_reply(f"✅ *Position fermée*\n${self._esc(pos['symbol'])} | max `+{pos['max_gain']:.0f}%`")
 
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     # DISCOVERY
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
 
     async def _cmd_wallets(self):
         stats = self.wallet_discovery.get_stats()
@@ -1578,9 +1576,9 @@ class MemeSniper:
             lines.append(f" {self._esc(k)}: `{v}`")
         await self._send_reply("\n".join(lines))
 
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     # SOCIAL
-    # ════════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════
 
     async def _cmd_social(self, args: str):
         parts = args.split()
@@ -1605,9 +1603,9 @@ class MemeSniper:
                 lines.append(f" Tier {inf['tier']}: @{self._esc(inf['username'])}")
         await self._send_reply("\n".join(lines))
 
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     # SYSTEM
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
 
     async def _cmd_report(self):
         await self._send_reply("📊 Génération du rapport...")
@@ -1642,7 +1640,7 @@ class MemeSniper:
 
     async def _cmd_help(self):
         msg = (
-            "🤖 *MemeSniper v14\\.1\\-EVOLUTION*\n━━━━━━━━━━━━━━\n\n"
+            "🤖 *MemeSniper v14.1-EVOLUTION*\n━━━━━━━━━━━━━━\n\n"
             "📊 *Info :*\n/status /stats /alertes /bullrun /backtest\n\n"
             "💰 *TRADING :*\n/buy `SYM AMT` - Préparer achat\n/confirm - Confirmer achat\n/cancel - Annuler achat\n/sold `SYM PNL` - ✅ Enregistrer vente\n\n"
             "🛒 *BOUTONS INLINE :*\nChaque alerte a des boutons BUY\n✅ J'ai acheté → SL/TP auto activés !\n\n"
@@ -1659,9 +1657,9 @@ class MemeSniper:
         )
         await self._send_reply(msg)
 
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     # HELPERS
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
 
     async def _send_reply(self, text: str):
         await self.alert_sender._send_telegram(text)
@@ -1676,9 +1674,9 @@ class MemeSniper:
         newest = dict(sorted(self.alerted_tokens.items(), key=lambda x: x[1], reverse=True)[:250])
         self.alerted_tokens = newest
 
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     # TOKEN HANDLERS — Avec EVENT STORE LOGGING
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
 
     async def handle_new_token_ws(self, token_data: dict):
         if self.paused: return
@@ -1711,9 +1709,9 @@ class MemeSniper:
         if self.dashboard: self.dashboard.add_event(f"Raydium: {symbol}")
         await self._analyze_and_alert(address, source=f"raydium_{source}")
 
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     # ANALYZE & ALERT v14.1 — WITH EVOLUTION LOGGING
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
 
     async def _analyze_and_alert(self, address: str, source: str):
         if self.paused: return
@@ -1862,8 +1860,8 @@ class MemeSniper:
                 
                 # ── EVENT STORE: LOG DETECTION + DECISION ─────────────
                 log_event(
-                    event_type="detection",
-                    source_module="early_detector",  # ou "grpc_listener" futur
+                    "detection",           # event_type (positionnel 1)
+                    "early_detector",      # source (positionnel 2)
                     token_mint=address,
                     token_symbol=symbol,
                     pool_address=analysis.get("pool", ""),
@@ -1879,7 +1877,7 @@ class MemeSniper:
                         "bundle_score": analysis.get("bundle_confidence", 0),
                         "twitter_mentions_5m": analysis.get("twitter_mentions_5m", 0),
                         "price_change_5m": analysis.get("price_change_5m", 0),
-                        "hour_utc": datetime.utcnow().hour,
+                        "hour_utc": datetime.now(timezone.utc).hour,
                         "composite_score": score,
                         "conviction_factors": analysis.get("conviction", 0),
                     },
@@ -1909,9 +1907,9 @@ class MemeSniper:
         finally:
             self.processing_tokens.discard(address)
 
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     # SIGNAL HANDLERS — Avec EVENT STORE LOGGING OUTCOMES
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
 
     async def handle_momentum_token(self, token_data: dict):
         try:
@@ -2041,9 +2039,9 @@ class MemeSniper:
         except Exception as e:
             logger.error(f"Watch handler: {e}")
 
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     # CLEANUP
-    # ════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
 
     async def cleanup_all(self):
         logger.info("[CLEANUP] 🛑 Arrêt en cours...")
