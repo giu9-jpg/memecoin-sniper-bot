@@ -54,11 +54,10 @@ watchfiles==1.2.0
 websockets==12.0
 yarl==1.24.2
 
-# Evolution / ML / Optimization (SANS versions fixes)
+# Evolution / ML / Optimization
 networkx
 optuna
 scipy
-xgboost
 scikit-learn
 joblib
 pandas

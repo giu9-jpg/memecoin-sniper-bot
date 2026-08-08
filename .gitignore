@@ -1,16 +1,35 @@
 # Secrets — NE JAMAIS ENVOYER SUR GITHUB
 .env
+.env.*
+!.env.example
 
 # Python
 venv/
+.venv/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Logs
 *.log
+logs/
+alert_sender.log
+
+# Data générée localement / Railway
+# Garde seulement data/.gitkeep si besoin.
+data/*.json
+data/*.db
+data/*.sqlite3
+data/events/
+data/evolution/
+data/exports/
+data/features/
+models/
 
 # OS
 .DS_Store
@@ -19,8 +38,12 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
-positions.json
-alert_sender.log
-*.log
-__pycache__/
+
+# Backups locaux
 *_backup.py
+main_v*_backup.py
+mon_code.txt
+structure.txt
+memesniper-priorites-1-5.zip
+code_*.txt
+data_stats_analysis.txt

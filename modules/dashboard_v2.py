@@ -1,611 +1,533 @@
-# modules/dashboard_v2.py v2.0
+# modules/dashboard_v2.py — v14.1-EVOLUTION
 """
-Dashboard v2 avec graphiques Chart.js
-- Courbe alertes par heure
-- Courbe tokens analysés
-- Heatmap bulls détectés
-- Top tokens
-- PnL portfolio
+Dashboard v14.1 compatible Railway/local.
+
+Améliorations :
+- Titre MemeSniper v14.1-EVOLUTION
+- Sections Overview / Evolution / Risk / Simulator
+- Event Store / Feature Store / Auto-ML / Strategy / Drift Guard
+- Performance Analyzer winners/losers
+- Paper Trading Only / Auto Buy OFF
+- Compatible Railway avec DASHBOARD_HOST / DASHBOARD_PORT / PORT
 """
+
+from __future__ import annotations
 
 import asyncio
 import os
 import time
+from typing import Any, Dict
+
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+
 from utils.logger import get_logger
+
 
 logger = get_logger("dashboard_v2")
 
 
-HTML_V2 = """<!DOCTYPE html>
+HTML_V2 = r"""<!DOCTYPE html>
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MemeSniper v13 Dashboard Pro</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<title>MemeSniper v14.1-EVOLUTION</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'Courier New',monospace;background:#0a0a0a;color:#ccc;padding:0}
-.header{background:#111;padding:14px 20px;border-bottom:2px solid #00ff41;
-        display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:100}
-.header h1{color:#00ff41;font-size:1.3em;font-weight:bold}
-.dot{width:10px;height:10px;background:#00ff41;border-radius:50%;
-     flex-shrink:0;animation:blink 1s infinite}
-@keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
-.ws-badge{font-size:.75em;padding:2px 8px;border-radius:10px;
-          background:#0a2a0a;color:#00ff41;border:1px solid #00ff41}
-.ws-badge.err{background:#2a0a0a;color:#ff4444;border-color:#ff4444}
-.uptime{margin-left:auto;color:#555;font-size:.8em}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
-      gap:14px;padding:14px}
-.card{background:#111;border:1px solid #1e1e1e;border-radius:8px;padding:14px}
-.card-title{color:#ff6600;font-size:.85em;font-weight:bold;text-transform:uppercase;
-            letter-spacing:.05em;margin-bottom:10px;padding-bottom:8px;
-            border-bottom:1px solid #1e1e1e}
-.row{display:flex;justify-content:space-between;align-items:center;
-     padding:5px 0;border-bottom:1px solid #141414;font-size:.82em}
-.row:last-child{border:none}
-.lbl{color:#555}
-.val{font-weight:bold;text-align:right}
-.g{color:#00ff41}.r{color:#ff4444}.o{color:#ff8800}
-.y{color:#ffcc00}.gr{color:#666}.b{color:#00aaff}
+body{font-family:'Courier New',monospace;background:#070707;color:#d0d0d0}
+.header{background:#101010;padding:14px 20px;border-bottom:2px solid #00ff41;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:10}
+h1{color:#00ff41;font-size:1.25rem}
+.dot{width:10px;height:10px;background:#00ff41;border-radius:50%;animation:blink 1s infinite}
+@keyframes blink{50%{opacity:.25}}
+.badge{font-size:.75rem;padding:3px 9px;border-radius:12px;border:1px solid #00ff41;color:#00ff41;background:#062006}
+.badge.red{border-color:#ff4444;color:#ff4444;background:#220606}
+.spacer{flex:1}
+.muted{color:#666}
+.tabs{display:flex;border-bottom:1px solid #1e1e1e;background:#0d0d0d;overflow-x:auto}
+.tab{padding:12px 20px;cursor:pointer;color:#777;border-bottom:2px solid transparent;white-space:nowrap}
+.tab.active{color:#00ff41;border-color:#00ff41}
+.content{display:none;padding:14px}
+.content.active{display:block}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:14px}
+.card{background:#111;border:1px solid #202020;border-radius:8px;padding:14px}
 .full{grid-column:1/-1}
-.wide{grid-column:span 2}
-.chart-container{position:relative;height:200px;margin-top:8px}
-.feed-wrap{background:#080808;border-radius:6px;padding:8px;
-           height:250px;overflow-y:auto;margin-top:6px}
-.feed-line{padding:3px 0;border-bottom:1px solid #111;
-           font-size:.78em;color:#777;display:flex;gap:8px}
-.feed-time{color:#333;flex-shrink:0}
-.section-title{color:#444;font-size:.75em;text-transform:uppercase;
-               letter-spacing:.1em;margin:10px 0 4px}
-.stat-big{font-size:2em;font-weight:bold;text-align:center;margin:10px 0}
-.tabs{display:flex;gap:0;margin-bottom:14px;border-bottom:1px solid #1e1e1e}
-.tab{padding:10px 20px;cursor:pointer;color:#666;font-size:.85em;
-     border-bottom:2px solid transparent;transition:all .2s}
-.tab.active{color:#00ff41;border-bottom-color:#00ff41}
-.tab-content{display:none}
-.tab-content.active{display:block}
+.title{color:#ff7a00;font-weight:bold;font-size:.86rem;letter-spacing:.04em;text-transform:uppercase;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid #202020}
+.row{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid #171717;font-size:.86rem}
+.row:last-child{border:0}
+.lbl{color:#666}
+.val{font-weight:bold;text-align:right}
+.g{color:#00ff41}
+.r{color:#ff4444}
+.y{color:#ffcc00}
+.o{color:#ff8800}
+.b{color:#00aaff}
+.gr{color:#777}
+.big{font-size:2rem;text-align:center;font-weight:bold;margin:10px 0}
+.feed{height:260px;overflow:auto;background:#080808;border-radius:6px;padding:8px}
+.line{font-size:.8rem;color:#aaa;border-bottom:1px solid #151515;padding:4px 0}
+.time{color:#444;margin-right:8px}
+.pill{display:inline-block;padding:2px 7px;border-radius:999px;background:#181818;border:1px solid #333;font-size:.75rem}
+.table{width:100%;border-collapse:collapse;font-size:.82rem}
+.table th,.table td{padding:7px;border-bottom:1px solid #1b1b1b;text-align:left}
+.table th{color:#ff7a00}
+.table td:last-child{text-align:right}
+.warn{border-color:#553500;background:#180f00}
+.danger{border-color:#5a1111;background:#180707}
+.small{font-size:.78rem;color:#777;line-height:1.45}
 </style>
 </head>
 <body>
 
 <div class="header">
   <div class="dot"></div>
-  <h1>MemeSniper v13 PRO</h1>
-  <span class="ws-badge" id="ws-badge">LIVE</span>
-  <span class="uptime" id="uptime-txt">--</span>
+  <h1>MemeSniper v14.1-EVOLUTION</h1>
+  <span id="live" class="badge">LIVE</span>
+  <span class="badge">PAPER ONLY</span>
+  <span class="badge red">AUTO BUY OFF</span>
+  <div class="spacer"></div>
+  <span id="uptime" class="muted">--</span>
 </div>
 
 <div class="tabs">
-  <div class="tab active" onclick="switchTab('overview')">📊 Overview</div>
-  <div class="tab" onclick="switchTab('charts')">📈 Charts</div>
-  <div class="tab" onclick="switchTab('portfolio')">💼 Portfolio</div>
-  <div class="tab" onclick="switchTab('bulls')">🎯 Bulls</div>
+  <div class="tab active" onclick="switchTab(event, 'overview')">📊 Overview</div>
+  <div class="tab" onclick="switchTab(event, 'evolution')">🧬 Evolution</div>
+  <div class="tab" onclick="switchTab(event, 'risk')">🛡️ Risk</div>
+  <div class="tab" onclick="switchTab(event, 'trades')">🎮 Simulator</div>
 </div>
 
-<!-- TAB OVERVIEW -->
-<div class="tab-content active" id="tab-overview">
-<div class="grid">
+<div id="overview" class="content active">
+  <div class="grid">
 
-  <div class="card">
-    <div class="card-title">🤖 Bot</div>
-    <div class="row"><span class="lbl">État</span><span class="val" id="b-state">--</span></div>
-    <div class="row"><span class="lbl">Uptime</span><span class="val gr" id="b-up">--</span></div>
-    <div class="row"><span class="lbl">Alertes</span><span class="val y" id="b-alerts">0</span></div>
-    <div class="row"><span class="lbl">Sell alerts</span><span class="val b" id="b-sells">0</span></div>
-    <div class="row"><span class="lbl">Analyses</span><span class="val gr" id="b-analyzed">0</span></div>
-    <div class="row"><span class="lbl">En cours</span><span class="val gr" id="b-proc">0</span></div>
-    <div class="row"><span class="lbl">WebSocket</span><span class="val" id="b-ws">--</span></div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">🌍 Marché</div>
-    <div class="row"><span class="lbl">BTC 24h</span><span class="val" id="m-btc">--</span></div>
-    <div class="row"><span class="lbl">SOL 24h</span><span class="val" id="m-sol">--</span></div>
-    <div class="row"><span class="lbl">Fear Greed</span><span class="val" id="m-fg">--</span></div>
-    <div class="row"><span class="lbl">Régime</span><span class="val" id="m-mood">--</span></div>
-    <div class="row"><span class="lbl">Score min</span><span class="val y" id="m-minscore">7.5</span></div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">🛡️ Sécurité</div>
-    <div class="row"><span class="lbl">Tokens checkés</span><span class="val" id="s-total">0</span></div>
-    <div class="row"><span class="lbl">Bloqués</span><span class="val r" id="s-blocked">0</span></div>
-    <div class="row"><span class="lbl">Honeypots</span><span class="val r" id="s-honey">0</span></div>
-    <div class="row"><span class="lbl">Liq faible</span><span class="val o" id="s-liq">0</span></div>
-    <div class="row"><span class="lbl">Taux blocage</span><span class="val" id="s-rate">0%</span></div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">🎯 Modules v13</div>
-    <div class="row"><span class="lbl">Bulls</span><span class="val g" id="mod-bulls">0</span></div>
-    <div class="row"><span class="lbl">Momentum</span><span class="val o" id="mod-momentum">0</span></div>
-    <div class="row"><span class="lbl">Positions</span><span class="val y" id="mod-positions">0</span></div>
-    <div class="row"><span class="lbl">Wallets trackés</span><span class="val b" id="mod-wallets">0</span></div>
-    <div class="row"><span class="lbl">Candidats</span><span class="val g" id="mod-candidates">0</span></div>
-    <div class="row"><span class="lbl">Optimisations</span><span class="val y" id="mod-opts">0</span></div>
-    <div class="row"><span class="lbl">ML trades</span><span class="val b" id="mod-ml">0</span></div>
-  </div>
-
-  <div class="card full">
-    <div class="card-title">📡 Live Feed <span style="font-size:.75em;color:#444;font-weight:normal;margin-left:8px">(temps réel)</span></div>
-    <div class="feed-wrap" id="feed">
-      <div class="feed-line"><span class="feed-time">--:--:--</span><span>En attente...</span></div>
+    <div class="card">
+      <div class="title">🤖 Bot</div>
+      <div class="row"><span class="lbl">État</span><span id="state" class="val g">--</span></div>
+      <div class="row"><span class="lbl">Uptime</span><span id="up2" class="val gr">--</span></div>
+      <div class="row"><span class="lbl">Alertes</span><span id="alerts" class="val y">0</span></div>
+      <div class="row"><span class="lbl">Alertes/h</span><span id="alerts_hour" class="val">0</span></div>
+      <div class="row"><span class="lbl">Analyses</span><span id="analyzed" class="val gr">0</span></div>
+      <div class="row"><span class="lbl">En cours</span><span id="processing" class="val gr">0</span></div>
+      <div class="row"><span class="lbl">WebSocket</span><span id="ws" class="val">--</span></div>
     </div>
+
+    <div class="card">
+      <div class="title">🌍 Marché</div>
+      <div class="row"><span class="lbl">BTC 24h</span><span id="btc" class="val">--</span></div>
+      <div class="row"><span class="lbl">SOL 24h</span><span id="sol" class="val">--</span></div>
+      <div class="row"><span class="lbl">Fear Greed</span><span id="fg" class="val">--</span></div>
+      <div class="row"><span class="lbl">Régime</span><span id="regime" class="val">--</span></div>
+      <div class="row"><span class="lbl">Score min</span><span id="minscore" class="val y">--</span></div>
+    </div>
+
+    <div class="card">
+      <div class="title">🛡️ Sécurité</div>
+      <div class="row"><span class="lbl">Tokens checkés</span><span id="s_total" class="val">0</span></div>
+      <div class="row"><span class="lbl">Bloqués</span><span id="s_blocked" class="val r">0</span></div>
+      <div class="row"><span class="lbl">Honeypots</span><span id="s_honey" class="val r">0</span></div>
+      <div class="row"><span class="lbl">Liq faible</span><span id="s_liq" class="val o">0</span></div>
+      <div class="row"><span class="lbl">Taux blocage</span><span id="s_rate" class="val">0%</span></div>
+    </div>
+
+    <div class="card">
+      <div class="title">🎯 Modules</div>
+      <div class="row"><span class="lbl">Bulls</span><span id="bulls" class="val g">0</span></div>
+      <div class="row"><span class="lbl">Momentum</span><span id="momentum" class="val o">0</span></div>
+      <div class="row"><span class="lbl">Positions</span><span id="positions" class="val y">0</span></div>
+      <div class="row"><span class="lbl">Wallets</span><span id="wallets" class="val b">0</span></div>
+      <div class="row"><span class="lbl">Candidats</span><span id="candidates" class="val g">0</span></div>
+      <div class="row"><span class="lbl">ML trades</span><span id="ml" class="val b">0</span></div>
+    </div>
+
+    <div class="card full">
+      <div class="title">📡 Live Feed</div>
+      <div id="feed" class="feed">
+        <div class="line"><span class="time">--:--:--</span>Connexion...</div>
+      </div>
+    </div>
+
   </div>
-
-</div>
-</div>
-
-<!-- TAB CHARTS -->
-<div class="tab-content" id="tab-charts">
-<div class="grid">
-
-  <div class="card wide">
-    <div class="card-title">📈 Tokens analysés (dernières 24h)</div>
-    <div class="chart-container"><canvas id="chart-analyzed"></canvas></div>
-  </div>
-
-  <div class="card wide">
-    <div class="card-title">🚨 Alertes envoyées (dernières 24h)</div>
-    <div class="chart-container"><canvas id="chart-alerts"></canvas></div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">🛡️ Répartition Safety</div>
-    <div class="chart-container"><canvas id="chart-safety"></canvas></div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">🔥 Sources détection</div>
-    <div class="chart-container"><canvas id="chart-sources"></canvas></div>
-  </div>
-
-</div>
-</div>
-
-<!-- TAB PORTFOLIO -->
-<div class="tab-content" id="tab-portfolio">
-<div class="grid">
-
-  <div class="card">
-    <div class="card-title">💼 Portefeuille</div>
-    <div class="stat-big g" id="p-value">0€</div>
-    <div class="row"><span class="lbl">Investi total</span><span class="val" id="p-invested">0€</span></div>
-    <div class="row"><span class="lbl">PnL réalisé</span><span class="val" id="p-realized">0€</span></div>
-    <div class="row"><span class="lbl">PnL non-réalisé</span><span class="val" id="p-unrealized">0€</span></div>
-    <div class="row"><span class="lbl">Positions ouvertes</span><span class="val y" id="p-open">0</span></div>
-    <div class="row"><span class="lbl">Trades totaux</span><span class="val gr" id="p-trades">0</span></div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">📊 PnL par période</div>
-    <div class="row"><span class="lbl">Aujourd'hui</span><span class="val" id="pnl-day">0€</span></div>
-    <div class="row"><span class="lbl">7 jours</span><span class="val" id="pnl-week">0€</span></div>
-    <div class="row"><span class="lbl">30 jours</span><span class="val" id="pnl-month">0€</span></div>
-    <div class="row"><span class="lbl">All-time</span><span class="val" id="pnl-all">0€</span></div>
-    <div class="row"><span class="lbl">Win rate</span><span class="val" id="pnl-wr">0%</span></div>
-  </div>
-
-  <div class="card wide">
-    <div class="card-title">📈 Évolution PnL</div>
-    <div class="chart-container"><canvas id="chart-pnl"></canvas></div>
-  </div>
-
-</div>
 </div>
 
-<!-- TAB BULLS -->
-<div class="tab-content" id="tab-bulls">
-<div class="grid">
+<div id="evolution" class="content">
+  <div class="grid">
 
-  <div class="card">
-    <div class="card-title">🎯 Bull Analyzer</div>
-    <div class="stat-big g" id="ba-total">0</div>
-    <div class="row"><span class="lbl">Bulls détectés (7j)</span><span class="val" id="ba-7d">0</span></div>
-    <div class="row"><span class="lbl">Gain moyen</span><span class="val g" id="ba-avg">0%</span></div>
-    <div class="row"><span class="lbl">Scans effectués</span><span class="val gr" id="ba-scans">0</span></div>
+    <div class="card">
+      <div class="title">🧬 Orchestrator</div>
+      <div class="row"><span class="lbl">Auto-Evolution</span><span id="ev_enabled" class="val g">--</span></div>
+      <div class="row"><span class="lbl">Event Store</span><span id="ev_events" class="val">0</span></div>
+      <div class="row"><span class="lbl">Events 24h</span><span id="ev_events_24h" class="val">0</span></div>
+      <div class="row"><span class="lbl">DB</span><span id="ev_db" class="val gr">--</span></div>
+      <div class="row"><span class="lbl">Feature Store</span><span id="ev_features" class="val">0</span></div>
+    </div>
+
+    <div class="card">
+      <div class="title">🤖 Auto-ML</div>
+      <div class="row"><span class="lbl">Mode</span><span id="ml_mode" class="val">--</span></div>
+      <div class="row"><span class="lbl">Model loaded</span><span id="ml_loaded" class="val">--</span></div>
+      <div class="row"><span class="lbl">Fallback</span><span id="ml_fallback" class="val y">--</span></div>
+    </div>
+
+    <div class="card">
+      <div class="title">📈 Strategy Optimizer</div>
+      <div class="row"><span class="lbl">Threshold</span><span id="st_threshold" class="val y">--</span></div>
+      <div class="row"><span class="lbl">Samples</span><span id="st_samples" class="val">--</span></div>
+      <div class="row"><span class="lbl">Objectif</span><span id="st_obj" class="val">--</span></div>
+      <div class="row"><span class="lbl">Last opt</span><span id="st_last" class="val gr">--</span></div>
+    </div>
+
+    <div class="card">
+      <div class="title">🛡️ Drift Guard</div>
+      <div class="row"><span class="lbl">Status</span><span id="dr_status" class="val">--</span></div>
+      <div class="row"><span class="lbl">Score drift</span><span id="dr_score" class="val">--</span></div>
+      <div class="row"><span class="lbl">Trading paused</span><span id="dr_pause" class="val">false</span></div>
+      <div class="row"><span class="lbl">Evol paused</span><span id="dr_epause" class="val">false</span></div>
+      <div class="row"><span class="lbl">Last check</span><span id="dr_last" class="val gr">--</span></div>
+    </div>
+
   </div>
-
-  <div class="card">
-    <div class="card-title">🔍 Wallet Discovery</div>
-    <div class="stat-big b" id="wd-wallets">0</div>
-    <div class="row"><span class="lbl">Wallets trackés</span><span class="val" id="wd-tracked">0</span></div>
-    <div class="row"><span class="lbl">Bulls analysés</span><span class="val" id="wd-bulls">0</span></div>
-    <div class="row"><span class="lbl">Candidats prêts</span><span class="val g" id="wd-candidates">0</span></div>
-  </div>
-
-  <div class="card wide">
-    <div class="card-title">⏰ Heatmap - Heures des bulls (UTC)</div>
-    <div class="chart-container"><canvas id="chart-heatmap"></canvas></div>
-  </div>
-
 </div>
+
+<div id="risk" class="content">
+  <div class="grid">
+
+    <div class="card">
+      <div class="title">⚙️ Réglages Risk</div>
+      <div class="row"><span class="lbl">Max alertes/h</span><span id="cfg_maxh" class="val y">--</span></div>
+      <div class="row"><span class="lbl">SIM check</span><span id="sim_check" class="val">--</span></div>
+      <div class="row"><span class="lbl">SIM SL</span><span id="sim_sl" class="val r">--</span></div>
+      <div class="row"><span class="lbl">SIM TP</span><span id="sim_tp" class="val g">--</span></div>
+      <div class="row"><span class="lbl">Max age</span><span id="sim_max_age" class="val">--</span></div>
+    </div>
+
+    <div class="card">
+      <div class="title">📊 Performance Analyzer</div>
+      <div class="row"><span class="lbl">Closed</span><span id="pa_closed" class="val">0</span></div>
+      <div class="row"><span class="lbl">WR</span><span id="pa_wr" class="val">0%</span></div>
+      <div class="row"><span class="lbl">ROI</span><span id="pa_roi" class="val">0%</span></div>
+      <div class="row"><span class="lbl">Big losses</span><span id="pa_big" class="val r">0</span></div>
+      <div class="row"><span class="lbl">Rug-like</span><span id="pa_rugs" class="val r">0</span></div>
+    </div>
+
+    <div class="card full">
+      <div class="title">✅ Recommandations</div>
+      <div id="reco" class="feed"></div>
+    </div>
+
+  </div>
+</div>
+
+<div id="trades" class="content">
+  <div class="grid">
+
+    <div class="card">
+      <div class="title">🎮 Simulator</div>
+      <div class="big" id="sim_roi">0%</div>
+      <div class="row"><span class="lbl">Simulés</span><span id="sim_total" class="val">0</span></div>
+      <div class="row"><span class="lbl">Ouverts</span><span id="sim_open" class="val y">0</span></div>
+      <div class="row"><span class="lbl">Fermés</span><span id="sim_closed" class="val">0</span></div>
+      <div class="row"><span class="lbl">Wins/Losses</span><span id="sim_wl" class="val">0/0</span></div>
+      <div class="row"><span class="lbl">Win rate</span><span id="sim_wr" class="val">0%</span></div>
+      <div class="row"><span class="lbl">PnL</span><span id="sim_pnl" class="val">0€</span></div>
+      <div class="row"><span class="lbl">Aujourd'hui</span><span id="sim_day" class="val">0€</span></div>
+      <div class="row"><span class="lbl">7 jours</span><span id="sim_week" class="val">0€</span></div>
+    </div>
+
+    <div class="card">
+      <div class="title">🏆 Best / Worst</div>
+      <div class="row"><span class="lbl">Best</span><span id="best_trade" class="val g">--</span></div>
+      <div class="row"><span class="lbl">Worst</span><span id="worst_trade" class="val r">--</span></div>
+      <div class="row"><span class="lbl">Big losses</span><span id="sim_big_losses" class="val r">0</span></div>
+      <div class="row"><span class="lbl">Durée moy</span><span id="sim_avg_duration" class="val">--</span></div>
+    </div>
+
+    <div class="card full">
+      <div class="title">📋 Derniers trades</div>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Token</th>
+            <th>Tier</th>
+            <th>Reason</th>
+            <th>PnL</th>
+          </tr>
+        </thead>
+        <tbody id="trades_body"></tbody>
+      </table>
+    </div>
+
+  </div>
 </div>
 
 <script>
-let ws, reconnTimer;
-let charts = {};
+let ws = null;
+let reconnTimer = null;
 
-// Historique pour les graphiques
-let historyAnalyzed = [];
-let historyAlerts = [];
-let historyTime = [];
-
-function switchTab(tab) {
+function switchTab(ev, id){
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-  event.target.classList.add('active');
-  document.getElementById('tab-' + tab).classList.add('active');
-
-  // Init charts si nécessaire
-  setTimeout(() => initCharts(), 50);
+  document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
+  if(ev && ev.target) ev.target.classList.add('active');
+  const el = document.getElementById(id);
+  if(el) el.classList.add('active');
 }
 
-function initCharts() {
-  // Chart Analyzed
-  if (!charts.analyzed && document.getElementById('chart-analyzed')) {
-    charts.analyzed = new Chart(document.getElementById('chart-analyzed'), {
-      type: 'line',
-      data: {
-        labels: [],
-        datasets: [{
-          label: 'Analyses/min',
-          data: [],
-          borderColor: '#00ff41',
-          backgroundColor: 'rgba(0,255,65,0.1)',
-          tension: 0.3,
-          fill: true,
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { legend: { labels: { color: '#666' } } },
-        scales: {
-          x: { ticks: { color: '#555' }, grid: { color: '#1e1e1e' } },
-          y: { ticks: { color: '#555' }, grid: { color: '#1e1e1e' } }
-        }
-      }
-    });
-  }
+function $(id){
+  return document.getElementById(id);
+}
 
-  if (!charts.alerts && document.getElementById('chart-alerts')) {
-    charts.alerts = new Chart(document.getElementById('chart-alerts'), {
-      type: 'bar',
-      data: {
-        labels: [],
-        datasets: [{
-          label: 'Alertes',
-          data: [],
-          backgroundColor: '#ffcc00',
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { legend: { labels: { color: '#666' } } },
-        scales: {
-          x: { ticks: { color: '#555' }, grid: { color: '#1e1e1e' } },
-          y: { ticks: { color: '#555' }, grid: { color: '#1e1e1e' }, beginAtZero: true }
-        }
-      }
-    });
-  }
+function set(id, value, cls){
+  const el = $(id);
+  if(!el) return;
+  el.textContent = (value === undefined || value === null || value === '') ? '--' : value;
+  if(cls) el.className = 'val ' + cls;
+}
 
-  if (!charts.safety && document.getElementById('chart-safety')) {
-    charts.safety = new Chart(document.getElementById('chart-safety'), {
-      type: 'doughnut',
-      data: {
-        labels: ['OK', 'Bloqués'],
-        datasets: [{
-          data: [0, 0],
-          backgroundColor: ['#00ff41', '#ff4444'],
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { legend: { labels: { color: '#666' } } }
-      }
-    });
-  }
+function pct(value){
+  if(value === undefined || value === null || isNaN(Number(value))) return '--';
+  const n = Number(value);
+  return (n >= 0 ? '+' : '') + n.toFixed(1) + '%';
+}
 
-  if (!charts.sources && document.getElementById('chart-sources')) {
-    charts.sources = new Chart(document.getElementById('chart-sources'), {
-      type: 'polarArea',
-      data: {
-        labels: ['Pump.fun', 'Copy', 'Twitter', 'Whales', 'Raydium'],
-        datasets: [{
-          data: [0, 0, 0, 0, 0],
-          backgroundColor: [
-            'rgba(0,255,65,0.6)',
-            'rgba(255,204,0,0.6)',
-            'rgba(0,170,255,0.6)',
-            'rgba(255,136,0,0.6)',
-            'rgba(255,68,68,0.6)',
-          ],
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { legend: { labels: { color: '#666' } } }
-      }
-    });
-  }
+function clsNum(value){
+  return Number(value || 0) >= 0 ? 'g' : 'r';
+}
 
-  if (!charts.pnl && document.getElementById('chart-pnl')) {
-    charts.pnl = new Chart(document.getElementById('chart-pnl'), {
-      type: 'line',
-      data: {
-        labels: [],
-        datasets: [{
-          label: 'PnL cumulé (€)',
-          data: [],
-          borderColor: '#00aaff',
-          backgroundColor: 'rgba(0,170,255,0.1)',
-          tension: 0.3,
-          fill: true,
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { legend: { labels: { color: '#666' } } },
-        scales: {
-          x: { ticks: { color: '#555' }, grid: { color: '#1e1e1e' } },
-          y: { ticks: { color: '#555' }, grid: { color: '#1e1e1e' } }
-        }
-      }
-    });
-  }
+function euro(value){
+  const n = Number(value || 0);
+  return (n >= 0 ? '+' : '') + n.toFixed(2) + '€';
+}
 
-  if (!charts.heatmap && document.getElementById('chart-heatmap')) {
-    charts.heatmap = new Chart(document.getElementById('chart-heatmap'), {
-      type: 'bar',
-      data: {
-        labels: Array.from({length:24},(_,i)=>i+'h'),
-        datasets: [{
-          label: 'Bulls par heure',
-          data: Array(24).fill(0),
-          backgroundColor: '#ff6600',
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { legend: { labels: { color: '#666' } } },
-        scales: {
-          x: { ticks: { color: '#555' }, grid: { color: '#1e1e1e' } },
-          y: { ticks: { color: '#555' }, grid: { color: '#1e1e1e' }, beginAtZero: true }
-        }
-      }
-    });
+function duration(sec){
+  sec = Number(sec || 0);
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  return h + 'h ' + m + 'm ' + s + 's';
+}
+
+function shortDate(value){
+  if(!value) return '--';
+  try{
+    return String(value).replace('T', ' ').slice(0, 19);
+  }catch(e){
+    return '--';
+  }
+}
+
+function addFeed(msg){
+  const f = $('feed');
+  if(!f) return;
+  const d = document.createElement('div');
+  d.className = 'line';
+  d.innerHTML = '<span class="time">' + new Date().toLocaleTimeString('fr-FR') + '</span>' + String(msg);
+  f.prepend(d);
+  while(f.children.length > 120) f.removeChild(f.lastChild);
+}
+
+function renderRecommendations(list){
+  const reco = $('reco');
+  if(!reco) return;
+  reco.innerHTML = '';
+  if(!list || !list.length){
+    const div = document.createElement('div');
+    div.className = 'line';
+    div.textContent = 'Aucune recommandation pour le moment.';
+    reco.appendChild(div);
+    return;
+  }
+  list.forEach(x => {
+    const div = document.createElement('div');
+    div.className = 'line';
+    div.textContent = '• ' + x;
+    reco.appendChild(div);
+  });
+}
+
+function tradeLabel(t){
+  if(!t) return '--';
+  const sym = t.symbol || '?';
+  const pnl = Number(t.pnl_pct || 0);
+  return '$' + sym + ' ' + pct(pnl);
+}
+
+function updateTrades(trades){
+  const body = $('trades_body');
+  if(!body) return;
+  body.innerHTML = '';
+  (trades || []).forEach(t => {
+    const tr = document.createElement('tr');
+    const p = Number(t.pnl_pct || 0);
+    tr.innerHTML =
+      '<td>$' + (t.symbol || '?') + '</td>' +
+      '<td>' + (t.alert_tier || '?') + '</td>' +
+      '<td>' + (t.exit_reason || '') + '</td>' +
+      '<td class="' + clsNum(p) + '">' + pct(p) + '</td>';
+    body.appendChild(tr);
+  });
+}
+
+function update(d){
+  d = d || {};
+
+  const up = d.uptime || 0;
+  $('uptime').textContent = 'Uptime: ' + duration(up);
+  set('up2', duration(up), 'gr');
+
+  set('state', d.paused ? 'Pause' : 'Actif', d.paused ? 'r' : 'g');
+  set('alerts', d.alerts_sent || 0, 'y');
+  set('alerts_hour', d.alerts_per_hour || 0, (d.alerts_per_hour || 0) > 10 ? 'o' : 'g');
+  set('analyzed', d.tokens_analyzed || 0, 'gr');
+  set('processing', d.processing || 0, 'gr');
+  set('ws', d.ws_active ? 'Actif' : 'Off', d.ws_active ? 'g' : 'r');
+
+  const m = d.market || {};
+  set('btc', pct(m.btc_24h), clsNum(m.btc_24h || 0));
+  set('sol', pct(m.sol_24h), clsNum(m.sol_24h || 0));
+  set('fg', m.fear_greed);
+  set('regime', m.regime);
+  set('minscore', d.config ? d.config.min_score : '--', 'y');
+  set('cfg_maxh', d.config ? d.config.max_alerts_per_hour : '--', 'y');
+
+  const s = d.safety || {};
+  set('s_total', s.total || 0);
+  set('s_blocked', s.blocked || 0, 'r');
+  set('s_honey', s.honey || 0, 'r');
+  set('s_liq', s.liq || 0, 'o');
+  set('s_rate', ((s.blocked || 0) / Math.max(s.total || 0, 1) * 100).toFixed(0) + '%');
+
+  set('bulls', d.bulls_count || 0, 'g');
+  set('momentum', d.momentum_alerts || 0, 'o');
+  set('positions', d.positions_open || 0, 'y');
+  set('wallets', d.wallets_tracked || 0, 'b');
+  set('candidates', d.wallet_candidates || 0, 'g');
+  set('ml', d.ml_trades || 0, 'b');
+
+  const ev = d.evolution || {};
+  set('ev_enabled', ev.enabled ? 'ACTIF' : 'OFF', ev.enabled ? 'g' : 'r');
+  set('ev_events', ev.event_store ? ev.event_store.total_events || 0 : 0);
+  set('ev_events_24h', ev.event_store ? ev.event_store.events_24h || 0 : 0);
+  set('ev_db', ev.event_store ? ev.event_store.db_path || '--' : '--', 'gr');
+  set('ev_features', ev.feature_store ? ev.feature_store.features_loaded || 0 : 0);
+
+  const am = ev.auto_ml || {};
+  set('ml_mode', am.mode || (am.last_metrics ? am.last_metrics.status : 'heuristic'), 'y');
+  set('ml_loaded', am.model_loaded ? 'true' : 'false', am.model_loaded ? 'g' : 'gr');
+  set('ml_fallback', am.fallback_available ? 'yes' : 'no', 'y');
+
+  const st = ev.strategy || {};
+  set('st_threshold', Number(st.alert_threshold || 0).toFixed(2), 'y');
+  set('st_samples', st.samples_used || 0);
+  set('st_obj', Number(st.objective_score || 0).toFixed(2));
+  set('st_last', shortDate(st.last_optimized_at), 'gr');
+
+  const dr = ev.drift_guard || {};
+  set('dr_status', dr.status || 'unknown', dr.status === 'stable' ? 'g' : 'o');
+  set('dr_score', Number(dr.last_drift_score || 0).toFixed(2));
+  set('dr_pause', dr.trading_paused ? 'true' : 'false', dr.trading_paused ? 'r' : 'g');
+  set('dr_epause', dr.auto_evolution_paused ? 'true' : 'false', dr.auto_evolution_paused ? 'r' : 'g');
+  set('dr_last', shortDate(dr.last_check_at), 'gr');
+
+  const sim = d.simulator || {};
+  set('sim_total', sim.total_simulated || 0);
+  set('sim_open', sim.open_positions || 0, 'y');
+  set('sim_closed', sim.closed_positions || 0);
+  set('sim_wl', (sim.wins || 0) + '/' + (sim.losses || 0));
+  set('sim_wr', (sim.win_rate || 0) + '%', (sim.win_rate || 0) >= 40 ? 'g' : 'o');
+  set('sim_pnl', euro(sim.total_pnl), clsNum(sim.total_pnl || 0));
+  set('sim_day', euro(sim.pnl_day), clsNum(sim.pnl_day || 0));
+  set('sim_week', euro(sim.pnl_week), clsNum(sim.pnl_week || 0));
+  set('sim_roi', pct(sim.roi_pct), clsNum(sim.roi_pct || 0));
+
+  const simRoi = $('sim_roi');
+  if(simRoi) simRoi.className = 'big ' + clsNum(sim.roi_pct || 0);
+
+  set('sim_check', sim.settings ? (sim.settings.check_interval || '--') + 's' : '--');
+  set('sim_sl', sim.settings ? (sim.settings.sl_pct || '--') + '%' : '--', 'r');
+  set('sim_tp', sim.settings ? '+' + (sim.settings.tp_pct || '--') + '%' : '--', 'g');
+  set('sim_max_age', sim.settings ? (sim.settings.max_age_hours || '--') + 'h' : '--');
+
+  set('best_trade', tradeLabel(sim.best_trade), 'g');
+  set('worst_trade', tradeLabel(sim.worst_trade), 'r');
+  set('sim_big_losses', sim.big_losses || 0, (sim.big_losses || 0) > 0 ? 'r' : 'g');
+  set('sim_avg_duration', (sim.avg_duration_min || 0).toFixed(0) + 'min');
+
+  const pa = (d.performance_analyzer && d.performance_analyzer.summary) ? d.performance_analyzer.summary : {};
+  set('pa_closed', pa.closed || 0);
+  set('pa_wr', (pa.win_rate || 0) + '%', (pa.win_rate || 0) >= 40 ? 'g' : 'o');
+  set('pa_roi', pct(pa.roi_pct || 0), clsNum(pa.roi_pct || 0));
+  set('pa_big', pa.big_losses || 0, (pa.big_losses || 0) > 0 ? 'r' : 'g');
+  set('pa_rugs', pa.rug_like_losses || 0, (pa.rug_like_losses || 0) > 0 ? 'r' : 'g');
+
+  renderRecommendations(d.performance_analyzer ? d.performance_analyzer.recommendations || [] : []);
+  updateTrades(d.recent_trades || []);
+
+  if(d.events && d.events.length){
+    d.events.forEach(addFeed);
   }
 }
 
 function connect(){
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(proto + '//' + location.host + '/ws');
+
   ws.onopen = () => {
-    document.getElementById('ws-badge').className = 'ws-badge';
-    document.getElementById('ws-badge').textContent = 'LIVE';
-    addFeed('Connecté au dashboard');
+    $('live').textContent = 'LIVE';
+    $('live').className = 'badge';
+    addFeed('Connecté au dashboard v14.1');
     clearTimeout(reconnTimer);
-    initCharts();
   };
-  ws.onmessage = (e) => {
-    try { render(JSON.parse(e.data)); } catch(err) { console.error(err); }
+
+  ws.onmessage = e => {
+    try{
+      update(JSON.parse(e.data));
+    }catch(err){
+      console.error(err);
+    }
   };
+
   ws.onclose = () => {
-    document.getElementById('ws-badge').className = 'ws-badge err';
-    document.getElementById('ws-badge').textContent = 'OFFLINE';
-    addFeed('Connexion perdue - reconnexion dans 5s...');
-    reconnTimer = setTimeout(connect, 5000);
+    $('live').textContent = 'OFF';
+    $('live').className = 'badge red';
+    addFeed('Connexion perdue - reconnexion dans 3s...');
+    reconnTimer = setTimeout(connect, 3000);
   };
-  ws.onerror = () => ws.close();
-}
 
-function render(d){
-  // Overview
-  const up = d.uptime || 0;
-  const h = Math.floor(up/3600), m = Math.floor((up%3600)/60), s = Math.floor(up%60);
-  const upStr = h+'h '+m+'m '+s+'s';
-  set('b-up', upStr);
-  set('uptime-txt', 'Uptime: '+upStr);
-
-  const running = !d.paused;
-  setC('b-state', running ? 'Actif' : 'PAUSE', running ? 'val g' : 'val o');
-  set('b-alerts', d.alerts_sent || 0);
-  set('b-sells', d.sell_alerts || 0);
-  set('b-analyzed', d.tokens_analyzed || 0);
-  set('b-proc', d.processing || 0);
-  setC('b-ws', d.ws_active ? 'Actif' : 'Inactif', d.ws_active ? 'val g' : 'val r');
-
-  // Marché
-  const mkt = d.market || {};
-  setChg('m-btc', mkt.btc_24h);
-  setChg('m-sol', mkt.sol_24h);
-  set('m-fg', mkt.fear_greed || '--');
-  set('m-mood', mkt.regime || '--');
-
-  // Safety
-  const saf = d.safety || {};
-  set('s-total', saf.total || 0);
-  set('s-blocked', saf.blocked || 0);
-  set('s-honey', saf.honey || 0);
-  set('s-liq', saf.liq || 0);
-  const rate = saf.total > 0 ? ((saf.blocked/saf.total)*100).toFixed(0)+'%' : '0%';
-  set('s-rate', rate);
-
-  // Modules v13
-  set('mod-bulls', d.bulls_count || 0);
-  set('mod-momentum', d.momentum_alerts || 0);
-  set('mod-positions', d.positions_open || 0);
-  set('mod-wallets', d.wallets_tracked || 0);
-  set('mod-candidates', d.wallet_candidates || 0);
-  set('mod-opts', d.optimizations || 0);
-  set('mod-ml', d.ml_trades || 0);
-
-  // Portfolio
-  const port = d.portfolio || {};
-  const totVal = (port.total_open_value || 0) + (port.total_pnl || 0);
-  set('p-value', totVal.toFixed(0) + '€');
-  set('p-invested', (port.total_invested || 0).toFixed(0) + '€');
-  const realized = port.total_pnl || 0;
-  const unrealized = port.total_open_pnl_eur || 0;
-  setC('p-realized', (realized >= 0 ? '+' : '') + realized.toFixed(0) + '€',
-       realized >= 0 ? 'val g' : 'val r');
-  setC('p-unrealized', (unrealized >= 0 ? '+' : '') + unrealized.toFixed(0) + '€',
-       unrealized >= 0 ? 'val g' : 'val r');
-  set('p-open', port.open_positions || 0);
-  set('p-trades', port.total_trades || 0);
-
-  // PnL par période
-  const pnl = d.pnl_periods || {};
-  setC('pnl-day', (pnl.pnl_day >= 0 ? '+' : '') + (pnl.pnl_day || 0).toFixed(0) + '€',
-       (pnl.pnl_day || 0) >= 0 ? 'val g' : 'val r');
-  setC('pnl-week', (pnl.pnl_week >= 0 ? '+' : '') + (pnl.pnl_week || 0).toFixed(0) + '€',
-       (pnl.pnl_week || 0) >= 0 ? 'val g' : 'val r');
-  setC('pnl-month', (pnl.pnl_month >= 0 ? '+' : '') + (pnl.pnl_month || 0).toFixed(0) + '€',
-       (pnl.pnl_month || 0) >= 0 ? 'val g' : 'val r');
-  setC('pnl-all', (pnl.pnl_all >= 0 ? '+' : '') + (pnl.pnl_all || 0).toFixed(0) + '€',
-       (pnl.pnl_all || 0) >= 0 ? 'val g' : 'val r');
-  set('pnl-wr', (pnl.win_rate_all || 0).toFixed(0) + '%');
-
-  // Bulls tab
-  const ba = d.bull_analyzer || {};
-  set('ba-total', ba.total || 0);
-  set('ba-7d', ba.total || 0);
-  set('ba-avg', '+' + (ba.avg_gain || 0).toFixed(0) + '%');
-  set('ba-scans', d.bulls_scans || 0);
-
-  const wd = d.wallet_discovery || {};
-  set('wd-wallets', wd.wallets_tracked || 0);
-  set('wd-tracked', wd.wallets_tracked || 0);
-  set('wd-bulls', wd.bulls_analyzed || 0);
-  set('wd-candidates', wd.candidates_ready || 0);
-
-  // Update charts
-  updateCharts(d);
-
-  // Events
-  if(d.events && d.events.length){
-    d.events.forEach(ev => addFeed(ev));
-  }
-}
-
-function updateCharts(d) {
-  const now = new Date().toLocaleTimeString('fr-FR');
-
-  // Historique analyses
-  historyTime.push(now);
-  historyAnalyzed.push(d.tokens_analyzed || 0);
-  historyAlerts.push(d.alerts_sent || 0);
-
-  if (historyTime.length > 20) {
-    historyTime.shift();
-    historyAnalyzed.shift();
-    historyAlerts.shift();
-  }
-
-  if (charts.analyzed) {
-    charts.analyzed.data.labels = historyTime;
-    charts.analyzed.data.datasets[0].data = historyAnalyzed;
-    charts.analyzed.update('none');
-  }
-
-  if (charts.alerts) {
-    charts.alerts.data.labels = historyTime;
-    charts.alerts.data.datasets[0].data = historyAlerts;
-    charts.alerts.update('none');
-  }
-
-  if (charts.safety) {
-    const saf = d.safety || {};
-    const ok = (saf.total || 0) - (saf.blocked || 0);
-    charts.safety.data.datasets[0].data = [ok, saf.blocked || 0];
-    charts.safety.update('none');
-  }
-
-  if (charts.sources) {
-    charts.sources.data.datasets[0].data = [
-      d.tokens_analyzed || 0,
-      d.copy_trades || 0,
-      d.twitter_signals || 0,
-      0,  // whales
-      d.raydium_tokens || 0,
-    ];
-    charts.sources.update('none');
-  }
-
-  if (charts.heatmap && d.bull_hours) {
-    const hourData = Array(24).fill(0);
-    Object.entries(d.bull_hours).forEach(([h, count]) => {
-      hourData[parseInt(h)] = count;
-    });
-    charts.heatmap.data.datasets[0].data = hourData;
-    charts.heatmap.update('none');
-  }
-}
-
-function set(id, val){
-  const el = document.getElementById(id);
-  if(el) el.textContent = val;
-}
-function setC(id, val, cls){
-  const el = document.getElementById(id);
-  if(!el) return;
-  el.textContent = val;
-  el.className = cls || 'val';
-}
-function setChg(id, val){
-  const el = document.getElementById(id);
-  if(!el) return;
-  if(val === undefined || val === null){ el.textContent = '--'; return; }
-  el.textContent = (val >= 0 ? '+' : '') + val.toFixed(1) + '%';
-  el.className = 'val ' + (val >= 0 ? 'g' : 'r');
-}
-function addFeed(msg){
-  const feed = document.getElementById('feed');
-  if(!feed) return;
-  const now = new Date().toLocaleTimeString('fr-FR');
-  const line = document.createElement('div');
-  line.className = 'feed-line';
-  line.innerHTML = '<span class="feed-time">' + now + '</span><span>' + msg + '</span>';
-  feed.prepend(line);
-  while(feed.children.length > 100) feed.removeChild(feed.lastChild);
+  ws.onerror = () => {
+    try{ ws.close(); }catch(e){}
+  };
 }
 
 connect();
-setTimeout(initCharts, 500);
 </script>
 </body>
 </html>"""
 
 
 class DashboardServerV2:
-
-    def __init__(self, bot, host="0.0.0.0", port=8080):
+    def __init__(self, bot, host: str = "0.0.0.0", port: int = 8080):
         self.bot = bot
         self.port = int(
-            os.environ.get("PORT") or
-            os.environ.get("DASHBOARD_PORT") or
-            port
+            os.environ.get("PORT")
+            or os.environ.get("DASHBOARD_PORT")
+            or port
         )
         self.host = os.environ.get("DASHBOARD_HOST", host)
 
-        self.app = FastAPI(title="MemeSniper Dashboard v2", docs_url=None)
-        self._clients = []
-        self._events = []
+        self.app = FastAPI(
+            title="MemeSniper v14.1-EVOLUTION Dashboard",
+            docs_url=None,
+            redoc_url=None,
+        )
+
+        self._clients: list[WebSocket] = []
+        self._events: list[str] = []
         self.safety_stats = {
-            "total": 0, "blocked": 0, "honey": 0, "liq": 0
+            "total": 0,
+            "blocked": 0,
+            "honey": 0,
+            "liq": 0,
         }
+
         self._setup_routes()
 
     def _setup_routes(self):
@@ -617,156 +539,251 @@ class DashboardServerV2:
 
         @app.get("/health")
         async def health():
-            return {
-                "status": "ok",
-                "service": "MemeSniper v13.0",
-                "uptime": time.time() - getattr(self.bot, 'start_time', time.time()),
-            }
+            return JSONResponse(
+                {
+                    "status": "ok",
+                    "service": "MemeSniper v14.1-EVOLUTION",
+                    "uptime": time.time()
+                    - getattr(self.bot, "start_time", time.time()),
+                    "paper_trading_only": True,
+                    "auto_trading": False,
+                }
+            )
+
+        @app.get("/api/status")
+        async def api_status():
+            return JSONResponse(self._collect())
 
         @app.websocket("/ws")
         async def ws_endpoint(ws: WebSocket):
             await ws.accept()
             self._clients.append(ws)
+
             try:
                 while True:
                     data = self._collect()
                     await ws.send_json(data)
                     self._events.clear()
                     await asyncio.sleep(3)
+
             except (WebSocketDisconnect, Exception):
                 pass
+
             finally:
                 if ws in self._clients:
                     self._clients.remove(ws)
 
-    def _collect(self):
-        """Collecte toutes les données du bot"""
+    def _safe_call(self, fn, default=None):
+        try:
+            return fn()
+        except Exception:
+            return default
+
+    def _collect(self) -> Dict[str, Any]:
         bot = self.bot
-        uptime = time.time() - getattr(bot, 'start_time', time.time())
+        uptime = time.time() - getattr(bot, "start_time", time.time())
 
         # Market
         market = {}
         try:
-            sig = bot.market_context.get_market_signal()
-            market = {
-                "btc_24h": sig.get("btc_change_24h"),
-                "sol_24h": sig.get("sol_change_24h"),
-                "fear_greed": sig.get("fear_greed"),
-                "regime": sig.get("regime", "?"),
-            }
+            market = bot.market_context.get_market_signal()
         except Exception:
-            pass
+            market = {}
 
         # Portfolio
         portfolio = {}
         pnl_periods = {}
         try:
-            if hasattr(bot, 'portfolio_tracker'):
+            if hasattr(bot, "portfolio_tracker"):
                 portfolio = bot.portfolio_tracker.get_portfolio_summary()
                 pnl_periods = bot.portfolio_tracker.get_pnl_by_period()
         except Exception:
             pass
 
-        # Bull analyzer
-        bull_analyzer = {}
-        bull_hours = {}
-        try:
-            if hasattr(bot, 'bull_analyzer'):
-                stats = bot.bull_analyzer.get_stats(days=7)
-                bull_analyzer = {
-                    "total": stats.get("total", 0),
-                    "avg_gain": stats.get("avg_gain", 0),
-                }
-                if stats.get("hours"):
-                    for h, c in stats["hours"]:
-                        bull_hours[h] = c
-        except Exception:
-            pass
-
-        # Wallet discovery
-        wallet_discovery = {}
-        try:
-            if hasattr(bot, 'wallet_discovery'):
-                wallet_discovery = bot.wallet_discovery.get_stats()
-        except Exception:
-            pass
-
-        # Sell generator
+        # Sell stats
         sell_stats = {}
         try:
-            if hasattr(bot, 'sell_generator'):
+            if hasattr(bot, "sell_generator"):
                 sell_stats = bot.sell_generator.get_stats()
         except Exception:
             pass
 
-        # ML
-        ml_trades = 0
+        # Wallet discovery
+        wallet_stats = {}
         try:
-            if hasattr(bot, 'ml_scorer'):
-                ml_trades = bot.ml_scorer.get_stats().get('trades', 0)
+            if hasattr(bot, "wallet_discovery"):
+                wallet_stats = bot.wallet_discovery.get_stats()
         except Exception:
             pass
 
-        # Optimizer
-        optimizations = 0
+        # ML stats
+        ml_stats = {}
         try:
-            if hasattr(bot, 'auto_optimizer'):
-                optimizations = bot.auto_optimizer.get_stats().get('total_optimizations', 0)
+            if hasattr(bot, "ml_scorer"):
+                ml_stats = bot.ml_scorer.get_stats()
         except Exception:
             pass
 
-        # Bulls count
+        # Optimizer stats
+        opt_stats = {}
+        try:
+            if hasattr(bot, "auto_optimizer"):
+                opt_stats = bot.auto_optimizer.get_stats()
+        except Exception:
+            pass
+
+        # Simulator stats
+        sim_stats = {}
+        recent_trades = []
+        try:
+            if hasattr(bot, "simulator"):
+                sim_stats = bot.simulator.get_stats()
+                recent_trades = bot.simulator.get_recent_trades(15)
+        except Exception:
+            pass
+
+        # Evolution
+        evolution: Dict[str, Any] = {
+            "enabled": bool(getattr(bot, "_evolution_started", False))
+        }
+
+        try:
+            if hasattr(bot, "event_store") and bot.event_store is not None:
+                if hasattr(bot.event_store, "get_status"):
+                    evolution["event_store"] = bot.event_store.get_status()
+                else:
+                    evolution["event_store"] = {}
+        except Exception:
+            evolution["event_store"] = {}
+
+        try:
+            if hasattr(bot, "feature_store") and bot.feature_store is not None:
+                if hasattr(bot.feature_store, "get_status"):
+                    evolution["feature_store"] = bot.feature_store.get_status()
+                else:
+                    evolution["feature_store"] = {}
+        except Exception:
+            evolution["feature_store"] = {}
+
+        try:
+            if hasattr(bot, "auto_ml") and bot.auto_ml is not None:
+                if hasattr(bot.auto_ml, "get_status"):
+                    evolution["auto_ml"] = bot.auto_ml.get_status()
+                else:
+                    evolution["auto_ml"] = {}
+        except Exception:
+            evolution["auto_ml"] = {}
+
+        try:
+            if hasattr(bot, "strategy_optimizer") and bot.strategy_optimizer is not None:
+                if hasattr(bot.strategy_optimizer, "get_current_strategy"):
+                    evolution["strategy"] = bot.strategy_optimizer.get_current_strategy()
+                else:
+                    evolution["strategy"] = {}
+        except Exception:
+            evolution["strategy"] = {}
+
+        try:
+            if hasattr(bot, "drift_guard") and bot.drift_guard is not None:
+                if hasattr(bot.drift_guard, "get_status"):
+                    evolution["drift_guard"] = bot.drift_guard.get_status()
+                else:
+                    evolution["drift_guard"] = {}
+        except Exception:
+            evolution["drift_guard"] = {}
+
+        # Performance Analyzer
+        perf_status = {}
+        try:
+            from modules.evolution.performance_analyzer import (
+                get_performance_analyzer,
+            )
+
+            perf_status = get_performance_analyzer().get_status()
+        except Exception:
+            perf_status = {}
+
+        alerts_sent = getattr(bot, "alerts_sent", 0)
+        alerts_per_hour = round(alerts_sent / max(uptime / 3600, 1 / 60), 2)
+
+        # Bulls
         bulls_count = 0
         bulls_scans = 0
         try:
-            if hasattr(bot, 'bull_analyzer'):
-                bulls_count = len(bot.bull_analyzer.bulls)
-                bulls_scans = bot.bull_analyzer.tokens_scanned
+            if hasattr(bot, "bull_analyzer"):
+                bulls_count = len(getattr(bot.bull_analyzer, "bulls", []) or [])
+                bulls_scans = getattr(bot.bull_analyzer, "tokens_scanned", 0)
         except Exception:
             pass
 
         return {
+            "version": "14.1-EVOLUTION",
             "uptime": uptime,
-            "paused": getattr(bot, 'paused', False),
-            "alerts_sent": getattr(bot, 'alerts_sent', 0),
-            "sell_alerts": getattr(bot, 'sell_alerts_sent', 0),
-            "tokens_analyzed": getattr(bot, 'tokens_analyzed', 0),
-            "processing": len(getattr(bot, 'processing_tokens', set())),
-            "ws_active": getattr(bot, 'ws_active', False),
-            "copy_trades": getattr(bot, 'copy_trades', 0),
-            "twitter_signals": getattr(bot, 'twitter_signals', 0),
-            "raydium_tokens": getattr(bot, 'raydium_tokens', 0),
-            "momentum_alerts": getattr(bot, 'momentum_alerts', 0),
-            "market": market,
+            "paused": getattr(bot, "paused", False),
+            "alerts_sent": alerts_sent,
+            "alerts_per_hour": alerts_per_hour,
+            "sell_alerts": getattr(bot, "sell_alerts_sent", 0),
+            "tokens_analyzed": getattr(bot, "tokens_analyzed", 0),
+            "processing": len(getattr(bot, "processing_tokens", set())),
+            "ws_active": getattr(bot, "ws_active", False),
+            "copy_trades": getattr(bot, "copy_trades", 0),
+            "twitter_signals": getattr(bot, "twitter_signals", 0),
+            "raydium_tokens": getattr(bot, "raydium_tokens", 0),
+            "momentum_alerts": getattr(bot, "momentum_alerts", 0),
+            "market": {
+                "btc_24h": market.get("btc_change_24h"),
+                "sol_24h": market.get("sol_change_24h"),
+                "fear_greed": market.get("fear_greed"),
+                "regime": market.get("regime", "?"),
+            },
+            "config": {
+                "min_score": getattr(
+                    getattr(bot, "config", None), "min_score", None
+                ),
+                "max_alerts_per_hour": getattr(
+                    getattr(bot, "config", None), "max_alerts_per_hour", None
+                ),
+            },
             "safety": self.safety_stats,
             "portfolio": portfolio,
             "pnl_periods": pnl_periods,
-            "bull_analyzer": bull_analyzer,
-            "bull_hours": bull_hours,
-            "wallet_discovery": wallet_discovery,
             "bulls_count": bulls_count,
             "bulls_scans": bulls_scans,
-            "wallets_tracked": wallet_discovery.get("wallets_tracked", 0),
-            "wallet_candidates": wallet_discovery.get("candidates_ready", 0),
+            "wallets_tracked": wallet_stats.get("wallets_tracked", 0),
+            "wallet_candidates": wallet_stats.get("candidates_ready", 0),
             "positions_open": sell_stats.get("positions_open", 0),
-            "ml_trades": ml_trades,
-            "optimizations": optimizations,
+            "ml_trades": ml_stats.get("trades", 0),
+            "optimizations": opt_stats.get("total_optimizations", 0),
+            "simulator": sim_stats,
+            "recent_trades": recent_trades,
+            "evolution": evolution,
+            "performance_analyzer": perf_status,
             "events": list(self._events),
+            "paper_trading_only": True,
+            "auto_trading": False,
         }
 
-    def add_event(self, msg):
-        self._events.append(msg)
-        if len(self._events) > 30:
-            self._events.pop(0)
+    def add_event(self, msg: str):
+        self._events.append(str(msg))
 
-    def record_safety(self, result):
+        if len(self._events) > 100:
+            self._events = self._events[-100:]
+
+    def record_safety(self, result: dict):
         self.safety_stats["total"] += 1
+
         if not result.get("safe"):
             self.safety_stats["blocked"] += 1
-            reasons = " ".join(result.get("reasons", []))
-            if "honeypot" in reasons.lower():
+
+            reasons = " ".join(
+                result.get("reasons", []) + result.get("warnings", [])
+            )
+            low = reasons.lower()
+
+            if "honeypot" in low:
                 self.safety_stats["honey"] += 1
-            if "liquidit" in reasons.lower():
+
+            if "liquid" in low or "liq" in low:
                 self.safety_stats["liq"] += 1
 
     async def start(self):
@@ -777,9 +794,14 @@ class DashboardServerV2:
             log_level="error",
             access_log=False,
         )
+
         server = uvicorn.Server(config)
-        logger.info(f"📊 Dashboard v2 → http://{self.host}:{self.port}")
+
+        logger.info(
+            f"📊 Dashboard v14.1 → http://{self.host}:{self.port}"
+        )
+
         await server.serve()
 
     async def stop(self):
-        logger.info("📊 Dashboard v2 arrêté")
+        logger.info("📊 Dashboard v14.1 arrêté")
