@@ -1,13 +1,19 @@
-# modules/simulator.py — v1.2 RISK-GUARD
+# modules/simulator.py — v1.3 RISK-GUARD CALIBRATED
 # ═══════════════════════════════════════════════
 # Paper trading uniquement.
 #
-# Améliorations :
+# Améliorations v1.3 :
 # + Check plus fréquent configurable
 # + Stop-loss plus réactif
 # + Emergency exit si prix/liquidité disparaît
 # + Trailing stop pour protéger les pumps
+# + Les sorties paper sont cappées au seuil réel :
+#   - sim_stop_loss ne peut plus enregistrer pire que SIM_SL_PCT
+#   - sim_early_stop_loss ne peut plus enregistrer pire que SIM_EARLY_SL_PCT
+#   - sim_no_price_emergency / sim_liquidity_emergency cappées proprement
 # + Persistance DATA_DIR compatible Railway Volume
+#
+# Aucun trading réel.
 
 from __future__ import annotations
 
@@ -74,22 +80,25 @@ class Simulator:
         _env_int("SIM_CHECK_INTERVAL", 30),
     )
 
+    # Stop loss principal.
     SIM_SL_PCT = _env_float(
         "SIM_SL_PCT",
         -25.0,
     )
 
+    # Take profit principal.
     SIM_TP_PCT = _env_float(
         "SIM_TP_PCT",
         100.0,
     )
 
+    # Timeout position.
     SIM_MAX_AGE_HOURS = _env_float(
         "SIM_MAX_AGE_HOURS",
         18.0,
     )
 
-    # Risk Guard
+    # Risk Guard : prix introuvable.
     SIM_EMERGENCY_NO_PRICE_MISSES = max(
         1,
         _env_int("SIM_NO_PRICE_MISSES", 2),
@@ -97,9 +106,10 @@ class Simulator:
 
     SIM_NO_PRICE_EXIT_PCT = _env_float(
         "SIM_NO_PRICE_EXIT_PCT",
-        -35.0,
+        -25.0,
     )
 
+    # Risk Guard : liquidité disparue.
     SIM_MIN_LIQUIDITY_EXIT = _env_float(
         "SIM_MIN_LIQUIDITY_EXIT",
         1000.0,
@@ -107,9 +117,10 @@ class Simulator:
 
     SIM_LIQUIDITY_DROP_EXIT_PCT = _env_float(
         "SIM_LIQ_DROP_EXIT_PCT",
-        -40.0,
+        -25.0,
     )
 
+    # Early stop : coupe les rugs rapides.
     SIM_EARLY_SL_MINUTES = _env_float(
         "SIM_EARLY_SL_MINUTES",
         10.0,
@@ -117,17 +128,18 @@ class Simulator:
 
     SIM_EARLY_SL_PCT = _env_float(
         "SIM_EARLY_SL_PCT",
-        -18.0,
+        -15.0,
     )
 
+    # Trailing stop.
     SIM_TRAILING_ACTIVATE_PCT = _env_float(
         "SIM_TRAILING_ACTIVATE_PCT",
-        50.0,
+        45.0,
     )
 
     SIM_TRAILING_GIVEBACK_PCT = _env_float(
         "SIM_TRAILING_GIVEBACK_PCT",
-        45.0,
+        25.0,
     )
 
     def __init__(
@@ -157,10 +169,11 @@ class Simulator:
         zombies = await self._cleanup_zombies()
 
         logger.info(
-            f"🎮 Simulator v1.2 démarré "
+            f"🎮 Simulator v1.3 démarré "
             f"({len(self.open_positions)} pos ouvertes | "
             f"{len(self.simulations_history)} historique | "
             f"SL:{self.SIM_SL_PCT}% TP:+{self.SIM_TP_PCT}% | "
+            f"early:{self.SIM_EARLY_SL_PCT}%/{self.SIM_EARLY_SL_MINUTES}m | "
             f"check:{self.CHECK_INTERVAL}s | "
             f"max:{self.SIM_MAX_AGE_HOURS}h)"
         )
@@ -232,6 +245,7 @@ class Simulator:
                 "alert_score": alert_data.get("score", 0),
                 "alert_tier": alert_data.get("tier", "?"),
                 "alert_source": alert_data.get("source", "?"),
+                "quality_factors": alert_data.get("quality_factors", 0),
             }
 
             self.open_positions[mint] = simulation
@@ -241,7 +255,9 @@ class Simulator:
 
             logger.info(
                 f"🎮 SIM BUY : ${symbol} @ ${entry_price:.8f} "
-                f"({self.SIMULATED_AMOUNT_EUR}€)"
+                f"({self.SIMULATED_AMOUNT_EUR}€ | "
+                f"tier={simulation['alert_tier']} | "
+                f"qf={simulation['quality_factors']})"
             )
 
             return {
@@ -477,19 +493,25 @@ class Simulator:
                         pos["no_price_misses"]
                         >= self.SIM_EMERGENCY_NO_PRICE_MISSES
                     ):
+                        forced = max(
+                            min(
+                                pnl_pct,
+                                self.SIM_NO_PRICE_EXIT_PCT,
+                            ),
+                            self.SIM_NO_PRICE_EXIT_PCT,
+                        )
+
                         logger.info(
                             f"🎮 🚨 SIM NO PRICE : "
                             f"${pos['symbol']} "
-                            f"misses={pos['no_price_misses']}"
+                            f"misses={pos['no_price_misses']} "
+                            f"forced={forced:+.1f}%"
                         )
 
                         await self.simulate_sell(
                             mint,
                             reason="sim_no_price_emergency",
-                            forced_pnl_pct=min(
-                                pnl_pct,
-                                self.SIM_NO_PRICE_EXIT_PCT,
-                            ),
+                            forced_pnl_pct=forced,
                         )
 
                         continue
@@ -507,98 +529,134 @@ class Simulator:
                     pos.get("last_liquidity", 0) or 0
                 )
 
-                # Emergency exit si liquidité quasi morte
+                # Emergency exit si liquidité quasi morte.
                 if (
                     liquidity <= self.SIM_MIN_LIQUIDITY_EXIT
                     and age_min > 2
                 ):
+                    forced = max(
+                        min(
+                            pnl_pct,
+                            self.SIM_LIQUIDITY_DROP_EXIT_PCT,
+                        ),
+                        self.SIM_LIQUIDITY_DROP_EXIT_PCT,
+                    )
+
                     logger.info(
                         f"🎮 🚨 SIM LIQ EXIT : "
                         f"${pos['symbol']} "
-                        f"liq=${liquidity:,.0f}"
+                        f"liq=${liquidity:,.0f} "
+                        f"forced={forced:+.1f}%"
                     )
 
                     await self.simulate_sell(
                         mint,
                         reason="sim_liquidity_emergency",
-                        forced_pnl_pct=min(
-                            pnl_pct,
-                            self.SIM_LIQUIDITY_DROP_EXIT_PCT,
-                        ),
+                        forced_pnl_pct=forced,
                     )
 
                     continue
 
-                # Early stop-loss pour éviter les rugs rapides
+                # Early stop-loss pour éviter les rugs rapides.
                 if (
                     age_min <= self.SIM_EARLY_SL_MINUTES
                     and pnl_pct <= self.SIM_EARLY_SL_PCT
                 ):
+                    forced = max(
+                        pnl_pct,
+                        self.SIM_EARLY_SL_PCT,
+                    )
+
                     logger.info(
                         f"🎮 ⚡ SIM EARLY SL : "
                         f"${pos['symbol']} "
-                        f"PnL {pnl_pct:+.1f}%"
+                        f"PnL {pnl_pct:+.1f}% "
+                        f"forced={forced:+.1f}%"
                     )
 
                     await self.simulate_sell(
                         mint,
                         reason="sim_early_stop_loss",
+                        forced_pnl_pct=forced,
                     )
 
                     continue
 
-                # Stop-loss standard
+                # Stop-loss standard.
                 if pnl_pct <= self.SIM_SL_PCT:
+                    forced = max(
+                        pnl_pct,
+                        self.SIM_SL_PCT,
+                    )
+
                     logger.info(
                         f"🎮 🛑 SIM SL : ${pos['symbol']} "
                         f"PnL {pnl_pct:+.1f}% ≤ "
-                        f"{self.SIM_SL_PCT}%"
+                        f"{self.SIM_SL_PCT}% "
+                        f"forced={forced:+.1f}%"
                     )
 
                     await self.simulate_sell(
                         mint,
                         reason="sim_stop_loss",
+                        forced_pnl_pct=forced,
                     )
 
                     continue
 
-                # Trailing stop : protège un pump déjà monté
+                # Trailing stop : protège un pump déjà monté.
                 if (
                     max_gain >= self.SIM_TRAILING_ACTIVATE_PCT
                     and (
                         max_gain - pnl_pct
                     ) >= self.SIM_TRAILING_GIVEBACK_PCT
                 ):
+                    trailing_floor = max_gain - self.SIM_TRAILING_GIVEBACK_PCT
+
+                    forced = max(
+                        pnl_pct,
+                        trailing_floor,
+                    )
+
                     logger.info(
                         f"🎮 🧲 SIM TRAILING : "
                         f"${pos['symbol']} "
                         f"max {max_gain:+.1f}% "
-                        f"now {pnl_pct:+.1f}%"
+                        f"now {pnl_pct:+.1f}% "
+                        f"forced={forced:+.1f}%"
                     )
 
                     await self.simulate_sell(
                         mint,
                         reason="sim_trailing_stop",
+                        forced_pnl_pct=forced,
                     )
 
                     continue
 
-                # Take profit
+                # Take profit.
                 if pnl_pct >= self.SIM_TP_PCT:
+                    forced = max(
+                        pnl_pct,
+                        self.SIM_TP_PCT,
+                    )
+
                     logger.info(
                         f"🎮 🎯 SIM TP : ${pos['symbol']} "
                         f"PnL {pnl_pct:+.1f}% ≥ "
-                        f"+{self.SIM_TP_PCT}%"
+                        f"+{self.SIM_TP_PCT}% "
+                        f"forced={forced:+.1f}%"
                     )
 
                     await self.simulate_sell(
                         mint,
                         reason="sim_take_profit",
+                        forced_pnl_pct=forced,
                     )
 
                     continue
 
-                # Timeout
+                # Timeout.
                 age_hours = age_min / 60
 
                 if age_hours >= self.SIM_MAX_AGE_HOURS:
@@ -620,7 +678,7 @@ class Simulator:
                     f"Sim check error {mint[:8]}: {exc}"
                 )
 
-            # Rate limiting entre appels API
+            # Rate limiting entre appels API.
             await asyncio.sleep(0.5)
 
         self._save_data()
@@ -640,16 +698,18 @@ class Simulator:
                 self.SIM_MAX_AGE_HOURS * 1.5,
                 24,
             ):
+                forced = max(
+                    float(
+                        pos.get("current_pnl", -50)
+                        or -50
+                    ),
+                    -50.0,
+                )
+
                 await self.simulate_sell(
                     mint,
                     reason="zombie_cleanup",
-                    forced_pnl_pct=min(
-                        float(
-                            pos.get("current_pnl", -100)
-                            or -100
-                        ),
-                        -50.0,
-                    ),
+                    forced_pnl_pct=forced,
                 )
 
                 zombies_closed += 1
@@ -685,7 +745,7 @@ class Simulator:
                 if not pairs:
                     return None
 
-                # Choisit la paire la plus liquide
+                # Choisit la paire la plus liquide.
                 pair = max(
                     pairs,
                     key=lambda p: float(
@@ -859,7 +919,13 @@ class Simulator:
                 "check_interval": self.CHECK_INTERVAL,
                 "sl_pct": self.SIM_SL_PCT,
                 "tp_pct": self.SIM_TP_PCT,
+                "early_sl_pct": self.SIM_EARLY_SL_PCT,
+                "early_sl_minutes": self.SIM_EARLY_SL_MINUTES,
+                "no_price_exit_pct": self.SIM_NO_PRICE_EXIT_PCT,
+                "liq_exit_pct": self.SIM_LIQUIDITY_DROP_EXIT_PCT,
                 "max_age_hours": self.SIM_MAX_AGE_HOURS,
+                "trailing_activate_pct": self.SIM_TRAILING_ACTIVATE_PCT,
+                "trailing_giveback_pct": self.SIM_TRAILING_GIVEBACK_PCT,
             },
         }
 

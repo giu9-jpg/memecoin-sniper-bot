@@ -252,7 +252,7 @@ class MemeSniper:
         
         # ── 1. Démarre modules core ────────────────────────────────
         modules_to_start = [
-            ("TokenSafety v1.4", self.token_safety),
+            ("TokenSafety v1.5", self.token_safety),
             ("RadyiumMonitor", self.raydium_monitor),
             ("MomentumDetector v1.2", self.momentum_detector),
             ("BullRunAnalyzer", self.bull_analyzer),
@@ -1796,7 +1796,149 @@ class MemeSniper:
             if decision["action"] == "IGNORE":
                 logger.info(f"[DECISION] {symbol} IGNORÉ : {decision.get('reason', '?')}")
                 return
-            
+
+            # 6B. Risk Calibration v14.2
+            # Objectif :
+            # - éviter les GOOD non rentables
+            # - empêcher les faux ULTIMATE basés uniquement sur score=10
+            # - renforcer les entrées en marché faible/neutral
+            try:
+                tier = str(decision.get("tier", "")).upper()
+
+                safety_score = float(safety.get("score", 0) or 0)
+                liquidity = float(analysis.get("liquidity", 0) or 0)
+                market_cap = float(analysis.get("market_cap", 0) or 0)
+                volume_5m = float(analysis.get("volume_5m", 0) or 0)
+                volume_1h = float(analysis.get("volume_1h", 0) or 0)
+
+                alpha_count = int(analysis.get("alpha_wallets", 0) or 0)
+                smart_count = int(analysis.get("smart_count", 0) or 0)
+                conviction = float(analysis.get("conviction", 0) or 0)
+
+                has_twitter = bool(analysis.get("twitter_signal") or twitter_signal)
+
+                whale_data = analysis.get("whale_inflow", {}) or {}
+                has_whale = bool(
+                    whale_data
+                    and whale_data.get("has_whales")
+                )
+
+                is_alpha_source = (
+                    source.startswith("twitter_")
+                    or source.startswith("copy_")
+                    or "TIER1" in source
+                    or "TIER2" in source
+                )
+
+                quality_factors = 0
+
+                if alpha_count >= 1:
+                    quality_factors += 1
+
+                if smart_count >= 2:
+                    quality_factors += 1
+
+                if conviction >= 1:
+                    quality_factors += 1
+
+                if has_twitter:
+                    quality_factors += 1
+
+                if has_whale:
+                    quality_factors += 1
+
+                if liquidity >= 25_000:
+                    quality_factors += 1
+
+                if volume_5m >= 15_000 or volume_1h >= 50_000:
+                    quality_factors += 1
+
+                # Marché actuel
+                fear_greed = 50
+                market_regime = "UNKNOWN"
+
+                try:
+                    market_signal = self.market_context.get_market_signal()
+                    fear_greed = int(market_signal.get("fear_greed", 50) or 50)
+                    market_regime = str(market_signal.get("regime", "UNKNOWN"))
+                except Exception:
+                    pass
+
+                weak_market = (
+                    fear_greed < 35
+                    or market_regime.upper() in ("BEAR", "RISK_OFF")
+                )
+
+                # GOOD est mauvais dans tes stats : 0 win / 5.
+                # On bloque les GOOD sauf s'il y a vraie source alpha.
+                if tier == "GOOD" and not is_alpha_source:
+                    logger.info(
+                        f"[RISK] {symbol} IGNORÉ : tier GOOD désactivé "
+                        f"(score={score:.1f}, safety={safety_score:.1f}, "
+                        f"qf={quality_factors}, liq=${liquidity:,.0f})"
+                    )
+                    return
+
+                # En marché faible, on évite les trades moyens.
+                if weak_market and tier not in ("ULTIMATE", "STRONG"):
+                    logger.info(
+                        f"[RISK] {symbol} IGNORÉ : marché faible "
+                        f"(FG={fear_greed}, regime={market_regime}, tier={tier})"
+                    )
+                    return
+
+                # STRONG doit avoir au moins une base solide.
+                if tier == "STRONG":
+                    if safety_score < 7.5:
+                        logger.info(
+                            f"[RISK] {symbol} IGNORÉ : STRONG safety trop faible "
+                            f"({safety_score:.1f}/10)"
+                        )
+                        return
+
+                    if liquidity < 15_000 and quality_factors < 2:
+                        logger.info(
+                            f"[RISK] {symbol} IGNORÉ : STRONG liq/qf insuffisants "
+                            f"(liq=${liquidity:,.0f}, qf={quality_factors})"
+                        )
+                        return
+
+                # ULTIMATE ne doit plus être uniquement score=10.
+                # Si aucun signal de conviction, on ignore.
+                if tier == "ULTIMATE":
+                    if quality_factors == 0:
+                        logger.info(
+                            f"[RISK] {symbol} IGNORÉ : faux ULTIMATE "
+                            f"sans conviction (score={score:.1f}, safety={safety_score:.1f})"
+                        )
+                        return
+
+                    if quality_factors == 1 and liquidity < 30_000 and not is_alpha_source:
+                        logger.info(
+                            f"[RISK] {symbol} ULTIMATE → STRONG : "
+                            f"conviction limitée (qf={quality_factors}, liq=${liquidity:,.0f})"
+                        )
+                        decision["tier"] = "STRONG"
+                        decision["amount_eur"] = min(
+                            float(decision.get("amount_eur", 8) or 8),
+                            8.0,
+                        )
+
+                    if safety_score < 8.0:
+                        logger.info(
+                            f"[RISK] {symbol} IGNORÉ : ULTIMATE safety trop faible "
+                            f"({safety_score:.1f}/10)"
+                        )
+                        return
+
+                analysis["risk_quality_factors"] = quality_factors
+                analysis["risk_weak_market"] = weak_market
+                analysis["risk_fear_greed"] = fear_greed
+
+            except Exception as risk_error:
+                logger.debug(f"[RISK] Calibration skip: {risk_error}")
+
+
             # 7. Speed adaptatif
             if source == "websocket":
                 alpha_count = analysis.get("alpha_wallets", 0)
@@ -1852,8 +1994,14 @@ class MemeSniper:
                 # Simulate buy
                 try:
                     await self.simulator.simulate_buy(
-                        mint=address, symbol=symbol,
-                        alert_data={"score": score, "tier": decision.get("tier", "?")},
+                        mint=address,
+                        symbol=symbol,
+                        alert_data={
+                            "score": score,
+                            "tier": decision.get("tier", "?"),
+                            "source": source,
+                            "quality_factors": analysis.get("risk_quality_factors", 0),
+                        },
                     )
                 except Exception as e:
                     logger.debug(f"Simulator buy error: {e}")
