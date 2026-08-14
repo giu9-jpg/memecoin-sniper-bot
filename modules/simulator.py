@@ -1,17 +1,18 @@
-# modules/simulator.py — v1.3 RISK-GUARD CALIBRATED
+# modules/simulator.py — v1.4 REALISTIC PAPER TRADING
 # ═══════════════════════════════════════════════
 # Paper trading uniquement.
 #
-# Améliorations v1.3 :
-# + Check plus fréquent configurable
-# + Stop-loss plus réactif
-# + Emergency exit si prix/liquidité disparaît
-# + Trailing stop pour protéger les pumps
-# + Les sorties paper sont cappées au seuil réel :
-#   - sim_stop_loss ne peut plus enregistrer pire que SIM_SL_PCT
-#   - sim_early_stop_loss ne peut plus enregistrer pire que SIM_EARLY_SL_PCT
-#   - sim_no_price_emergency / sim_liquidity_emergency cappées proprement
-# + Persistance DATA_DIR compatible Railway Volume
+# Améliorations v1.4 :
+# + PnL idéal ET PnL réaliste
+# + Slippage achat / vente
+# + Frais DEX
+# + Priority fee
+# + Price impact
+# + Execution buffer
+# + Les champs principaux pnl_pct / pnl_eur utilisent maintenant le PnL réaliste
+# + Les champs ideal_pnl_pct / ideal_pnl_eur gardent le PnL théorique
+# + Compatible AutoOptimizer SAFE v2.0
+# + Compatible Dashboard / commandes Telegram existantes
 #
 # Aucun trading réel.
 
@@ -32,34 +33,35 @@ from utils.logger import get_logger
 logger = get_logger("simulator")
 
 
-def _env_float(
-    name: str,
-    default: float,
-) -> float:
+def _env_float(name: str, default: float) -> float:
     try:
-        return float(
-            str(
-                os.getenv(name, str(default))
-            ).replace(",", ".")
-        )
+        return float(str(os.getenv(name, str(default))).replace(",", "."))
     except Exception:
         return float(default)
 
 
-def _env_int(
-    name: str,
-    default: int,
-) -> int:
+def _env_int(name: str, default: int) -> int:
     try:
-        return int(
-            float(
-                str(
-                    os.getenv(name, str(default))
-                ).replace(",", ".")
-            )
-        )
+        return int(float(str(os.getenv(name, str(default))).replace(",", ".")))
     except Exception:
         return int(default)
+
+
+def _env_bool(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name)
+
+    if raw is None:
+        return default
+
+    return str(raw).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+        "oui",
+        "vrai",
+    )
 
 
 def _data_dir() -> Path:
@@ -74,7 +76,7 @@ class Simulator:
         10.0,
     )
 
-    # Plus réactif que 120s pour limiter les -80/-100 en paper.
+    # Fréquence de contrôle.
     CHECK_INTERVAL = max(
         15,
         _env_int("SIM_CHECK_INTERVAL", 30),
@@ -98,7 +100,7 @@ class Simulator:
         18.0,
     )
 
-    # Risk Guard : prix introuvable.
+    # Prix introuvable.
     SIM_EMERGENCY_NO_PRICE_MISSES = max(
         1,
         _env_int("SIM_NO_PRICE_MISSES", 2),
@@ -109,7 +111,7 @@ class Simulator:
         -25.0,
     )
 
-    # Risk Guard : liquidité disparue.
+    # Liquidité disparue.
     SIM_MIN_LIQUIDITY_EXIT = _env_float(
         "SIM_MIN_LIQUIDITY_EXIT",
         1000.0,
@@ -142,10 +144,49 @@ class Simulator:
         25.0,
     )
 
-    def __init__(
-        self,
-        ml_scorer=None,
-    ):
+    # Mode réaliste.
+    SIM_REALISTIC_MODE = _env_bool(
+        "SIM_REALISTIC_MODE",
+        True,
+    )
+
+    # Hypothèses réalistes par défaut.
+    # Un +25% idéal devient souvent environ +12% à +16% réaliste.
+    SIM_BUY_SLIPPAGE_PCT = _env_float(
+        "SIM_BUY_SLIPPAGE_PCT",
+        2.5,
+    )
+
+    SIM_SELL_SLIPPAGE_PCT = _env_float(
+        "SIM_SELL_SLIPPAGE_PCT",
+        2.5,
+    )
+
+    # Frais DEX approximatifs par côté.
+    SIM_DEX_FEE_PCT = _env_float(
+        "SIM_DEX_FEE_PCT",
+        0.7,
+    )
+
+    # Impact prix approximatif par côté.
+    SIM_PRICE_IMPACT_PCT = _env_float(
+        "SIM_PRICE_IMPACT_PCT",
+        1.0,
+    )
+
+    # Buffer d’exécution côté vente : latence, spread, prix moins bon.
+    SIM_EXECUTION_BUFFER_PCT = _env_float(
+        "SIM_EXECUTION_BUFFER_PCT",
+        1.0,
+    )
+
+    # Priority fee approximative en euros par trade complet.
+    SIM_PRIORITY_FEE_EUR = _env_float(
+        "SIM_PRIORITY_FEE_EUR",
+        0.03,
+    )
+
+    def __init__(self, ml_scorer=None):
         self.ml_scorer = ml_scorer
         self.session: aiohttp.ClientSession | None = None
         self.running = False
@@ -169,13 +210,13 @@ class Simulator:
         zombies = await self._cleanup_zombies()
 
         logger.info(
-            f"🎮 Simulator v1.3 démarré "
+            f"🎮 Simulator v1.4 REALISTIC démarré "
             f"({len(self.open_positions)} pos ouvertes | "
             f"{len(self.simulations_history)} historique | "
             f"SL:{self.SIM_SL_PCT}% TP:+{self.SIM_TP_PCT}% | "
             f"early:{self.SIM_EARLY_SL_PCT}%/{self.SIM_EARLY_SL_MINUTES}m | "
             f"check:{self.CHECK_INTERVAL}s | "
-            f"max:{self.SIM_MAX_AGE_HOURS}h)"
+            f"realistic:{'ON' if self.SIM_REALISTIC_MODE else 'OFF'})"
         )
 
         if zombies > 0:
@@ -191,6 +232,108 @@ class Simulator:
             await self.session.close()
 
         logger.info("🎮 Simulator arrêté")
+
+    # ════════════════════════════════════════
+    # HELPERS REALISTIC PNL
+    # ════════════════════════════════════════
+
+    def _buy_drag_pct(self) -> float:
+        if not self.SIM_REALISTIC_MODE:
+            return 0.0
+
+        return (
+            self.SIM_BUY_SLIPPAGE_PCT
+            + self.SIM_DEX_FEE_PCT
+            + self.SIM_PRICE_IMPACT_PCT
+        )
+
+    def _sell_drag_pct(self) -> float:
+        if not self.SIM_REALISTIC_MODE:
+            return 0.0
+
+        return (
+            self.SIM_SELL_SLIPPAGE_PCT
+            + self.SIM_DEX_FEE_PCT
+            + self.SIM_PRICE_IMPACT_PCT
+            + self.SIM_EXECUTION_BUFFER_PCT
+        )
+
+    def _priority_fee_pct(self, amount_eur: float) -> float:
+        if not self.SIM_REALISTIC_MODE:
+            return 0.0
+
+        if amount_eur <= 0:
+            return 0.0
+
+        return self.SIM_PRIORITY_FEE_EUR / amount_eur * 100.0
+
+    def _compute_realistic_from_prices(
+        self,
+        entry_price: float,
+        ideal_exit_price: float,
+        amount_eur: float,
+    ) -> dict:
+        """
+        Calcule le PnL réaliste à partir du prix d'entrée idéal et du prix de sortie idéal.
+
+        Hypothèse :
+        - entrée réelle plus chère à cause du slippage/frais/impact
+        - sortie réelle moins bonne à cause du slippage/frais/impact/buffer
+        - priority fee déduite du PnL final
+        """
+
+        if entry_price <= 0:
+            return {
+                "realistic_entry_price": 0.0,
+                "realistic_exit_price": 0.0,
+                "realistic_pnl_pct": -100.0,
+                "realistic_pnl_eur": -amount_eur,
+                "realistic_final_eur": 0.0,
+                "total_cost_pct": 100.0,
+            }
+
+        buy_drag = self._buy_drag_pct()
+        sell_drag = self._sell_drag_pct()
+        priority_fee_pct = self._priority_fee_pct(amount_eur)
+
+        realistic_entry_price = entry_price * (1.0 + buy_drag / 100.0)
+        realistic_exit_price = ideal_exit_price * max(
+            0.0,
+            1.0 - sell_drag / 100.0,
+        )
+
+        if realistic_entry_price <= 0:
+            realistic_pnl_pct = -100.0
+        else:
+            realistic_pnl_pct = (
+                (realistic_exit_price - realistic_entry_price)
+                / realistic_entry_price
+            ) * 100.0
+
+        # Priority fee en pourcentage du capital.
+        realistic_pnl_pct -= priority_fee_pct
+
+        realistic_pnl_eur = amount_eur * (realistic_pnl_pct / 100.0)
+        realistic_final_eur = amount_eur + realistic_pnl_eur
+
+        return {
+            "realistic_entry_price": realistic_entry_price,
+            "realistic_exit_price": realistic_exit_price,
+            "realistic_pnl_pct": round(realistic_pnl_pct, 2),
+            "realistic_pnl_eur": round(realistic_pnl_eur, 2),
+            "realistic_final_eur": round(realistic_final_eur, 2),
+            "total_cost_pct": round(
+                buy_drag + sell_drag + priority_fee_pct,
+                2,
+            ),
+            "buy_drag_pct": round(buy_drag, 2),
+            "sell_drag_pct": round(sell_drag, 2),
+            "priority_fee_pct": round(priority_fee_pct, 2),
+            "priority_fee_eur": round(
+                self.SIM_PRIORITY_FEE_EUR if self.SIM_REALISTIC_MODE else 0.0,
+                4,
+            ),
+        }
 
     # ════════════════════════════════════════
     # SIMULER UN ACHAT
@@ -218,17 +361,27 @@ class Simulator:
                 }
 
             entry_price = float(data["price"])
+            amount_eur = self.SIMULATED_AMOUNT_EUR
             alert_data = alert_data or {}
+
+            buy_drag = self._buy_drag_pct()
+            realistic_entry_price = entry_price * (1.0 + buy_drag / 100.0)
 
             simulation = {
                 "id": f"sim_{int(time.time())}_{mint[:8]}",
                 "mint": mint,
                 "symbol": symbol,
-                "amount_eur": self.SIMULATED_AMOUNT_EUR,
+                "amount_eur": amount_eur,
 
+                # Prix idéal
                 "entry_price": entry_price,
                 "entry_mc": data.get("market_cap", 0),
                 "entry_liquidity": data.get("liquidity", 0),
+
+                # Prix réaliste
+                "realistic_entry_price": realistic_entry_price,
+                "entry_cost_pct": round(buy_drag, 2),
+                "realistic_mode": bool(self.SIM_REALISTIC_MODE),
 
                 "entry_time": time.time(),
                 "entry_date": datetime.now(timezone.utc).isoformat(),
@@ -255,9 +408,9 @@ class Simulator:
 
             logger.info(
                 f"🎮 SIM BUY : ${symbol} @ ${entry_price:.8f} "
-                f"({self.SIMULATED_AMOUNT_EUR}€ | "
-                f"tier={simulation['alert_tier']} | "
-                f"qf={simulation['quality_factors']})"
+                f"({amount_eur}€ | tier={simulation['alert_tier']} | "
+                f"qf={simulation['quality_factors']} | "
+                f"real_entry=${realistic_entry_price:.8f})"
             )
 
             return {
@@ -294,85 +447,104 @@ class Simulator:
 
             data = await self._fetch_price(mint)
 
-            entry_price = float(
-                pos.get("entry_price", 0) or 0
-            )
+            entry_price = float(pos.get("entry_price", 0) or 0)
+            amount_eur = float(pos.get("amount_eur", self.SIMULATED_AMOUNT_EUR) or 0)
 
             if forced_pnl_pct is not None:
-                pnl_pct = float(forced_pnl_pct)
-                exit_price = entry_price * max(
+                ideal_pnl_pct = float(forced_pnl_pct)
+                ideal_exit_price = entry_price * max(
                     0.0,
-                    1.0 + pnl_pct / 100.0,
+                    1.0 + ideal_pnl_pct / 100.0,
                 )
 
             elif data and data.get("price", 0) > 0:
-                exit_price = float(data["price"])
+                ideal_exit_price = float(data["price"])
 
                 if entry_price > 0:
-                    pnl_pct = (
-                        (exit_price - entry_price)
+                    ideal_pnl_pct = (
+                        (ideal_exit_price - entry_price)
                         / entry_price
                     ) * 100
                 else:
-                    pnl_pct = -100.0
+                    ideal_pnl_pct = -100.0
 
             else:
-                # Si le prix a disparu, on ne laisse pas une perte zombie optimiste.
-                pnl_pct = min(
+                # Si le prix a disparu, on force une sortie prudente.
+                ideal_pnl_pct = min(
                     float(pos.get("current_pnl", 0) or 0),
                     self.SIM_NO_PRICE_EXIT_PCT,
                 )
 
-                exit_price = entry_price * max(
+                ideal_exit_price = entry_price * max(
                     0.0,
-                    1.0 + pnl_pct / 100.0,
+                    1.0 + ideal_pnl_pct / 100.0,
                 )
 
-            amount_eur = float(
-                pos.get(
-                    "amount_eur",
-                    self.SIMULATED_AMOUNT_EUR,
-                )
+            ideal_pnl_eur = amount_eur * (ideal_pnl_pct / 100.0)
+            ideal_final_eur = amount_eur + ideal_pnl_eur
+
+            realistic = self._compute_realistic_from_prices(
+                entry_price=entry_price,
+                ideal_exit_price=ideal_exit_price,
+                amount_eur=amount_eur,
             )
 
-            pnl_eur = amount_eur * (pnl_pct / 100)
-            final_eur = amount_eur + pnl_eur
+            realistic_pnl_pct = realistic["realistic_pnl_pct"]
+            realistic_pnl_eur = realistic["realistic_pnl_eur"]
+            realistic_final_eur = realistic["realistic_final_eur"]
 
+            # IMPORTANT :
+            # Les champs principaux pnl_pct/pnl_eur deviennent réalistes.
+            # Les champs ideal_* gardent la théorie.
             pos.update(
                 {
-                    "exit_price": exit_price,
+                    "exit_price": ideal_exit_price,
+                    "ideal_exit_price": ideal_exit_price,
+                    "realistic_exit_price": realistic["realistic_exit_price"],
+
                     "exit_time": time.time(),
-                    "exit_date": datetime.now(
-                        timezone.utc
-                    ).isoformat(),
-                    "pnl_pct": round(pnl_pct, 2),
-                    "pnl_eur": round(pnl_eur, 2),
-                    "final_eur": round(final_eur, 2),
+                    "exit_date": datetime.now(timezone.utc).isoformat(),
+
+                    "ideal_pnl_pct": round(ideal_pnl_pct, 2),
+                    "ideal_pnl_eur": round(ideal_pnl_eur, 2),
+                    "ideal_final_eur": round(ideal_final_eur, 2),
+
+                    "realistic_pnl_pct": realistic_pnl_pct,
+                    "realistic_pnl_eur": realistic_pnl_eur,
+                    "realistic_final_eur": realistic_final_eur,
+
+                    # Compatibilité avec tous les modules existants :
+                    # on expose le réaliste comme PnL principal.
+                    "pnl_pct": realistic_pnl_pct,
+                    "pnl_eur": realistic_pnl_eur,
+                    "final_eur": realistic_final_eur,
+
                     "duration_min": round(
                         (
                             time.time()
-                            - float(
-                                pos.get(
-                                    "entry_time",
-                                    time.time(),
-                                )
-                            )
+                            - float(pos.get("entry_time", time.time()))
                         )
                         / 60,
                         1,
                     ),
                     "closed": True,
                     "exit_reason": reason,
-                    "exit_mc": (
-                        data.get("market_cap", 0)
-                        if data
-                        else 0
-                    ),
-                    "exit_liquidity": (
-                        data.get("liquidity", 0)
-                        if data
-                        else 0
-                    ),
+                    "exit_mc": data.get("market_cap", 0) if data else 0,
+                    "exit_liquidity": data.get("liquidity", 0) if data else 0,
+
+                    "realistic_mode": bool(self.SIM_REALISTIC_MODE),
+                    "costs": {
+                        "buy_slippage_pct": self.SIM_BUY_SLIPPAGE_PCT,
+                        "sell_slippage_pct": self.SIM_SELL_SLIPPAGE_PCT,
+                        "dex_fee_pct": self.SIM_DEX_FEE_PCT,
+                        "price_impact_pct": self.SIM_PRICE_IMPACT_PCT,
+                        "execution_buffer_pct": self.SIM_EXECUTION_BUFFER_PCT,
+                        "priority_fee_eur": self.SIM_PRIORITY_FEE_EUR,
+                        "total_cost_pct": realistic["total_cost_pct"],
+                        "buy_drag_pct": realistic["buy_drag_pct"],
+                        "sell_drag_pct": realistic["sell_drag_pct"],
+                        "priority_fee_pct": realistic["priority_fee_pct"],
+                    },
                 }
             )
 
@@ -381,15 +553,15 @@ class Simulator:
             del self.open_positions[mint]
 
             self.total_closed += 1
-            self.total_pnl_eur += pnl_eur
+            self.total_pnl_eur += realistic_pnl_eur
 
-            # Nourrir le ML historique existant
+            # Nourrir le ML historique existant avec le PnL réaliste.
             if self.ml_scorer:
                 try:
                     self.ml_scorer.record_result(
                         token_name=pos["symbol"],
-                        is_win=(pnl_pct > 0),
-                        pnl_pct=pnl_pct,
+                        is_win=(realistic_pnl_pct > 0),
+                        pnl_pct=realistic_pnl_pct,
                     )
 
                 except Exception as exc:
@@ -397,20 +569,33 @@ class Simulator:
 
             self._save_data()
 
-            emoji = "🟢" if pnl_pct > 0 else "🔴"
+            emoji = "🟢" if realistic_pnl_pct > 0 else "🔴"
 
             logger.info(
                 f"🎮 SIM SELL {emoji} : ${pos['symbol']} "
-                f"PnL {pnl_pct:+.1f}% ({pnl_eur:+.2f}€) "
+                f"Ideal {ideal_pnl_pct:+.1f}% | "
+                f"Real {realistic_pnl_pct:+.1f}% "
+                f"({realistic_pnl_eur:+.2f}€) "
                 f"reason={reason}"
             )
 
             return {
                 "success": True,
                 "simulation": pos,
-                "pnl_pct": pnl_pct,
-                "pnl_eur": pnl_eur,
-                "final_eur": final_eur,
+
+                # Compatibilité : valeurs principales réalistes.
+                "pnl_pct": realistic_pnl_pct,
+                "pnl_eur": realistic_pnl_eur,
+                "final_eur": realistic_final_eur,
+
+                "ideal_pnl_pct": ideal_pnl_pct,
+                "ideal_pnl_eur": ideal_pnl_eur,
+                "ideal_final_eur": ideal_final_eur,
+
+                "realistic_pnl_pct": realistic_pnl_pct,
+                "realistic_pnl_eur": realistic_pnl_eur,
+                "realistic_final_eur": realistic_final_eur,
+
                 "duration_min": pos["duration_min"],
             }
 
@@ -447,13 +632,8 @@ class Simulator:
             try:
                 data = await self._fetch_price(mint)
 
-                entry_price = float(
-                    pos.get("entry_price", 0) or 0
-                )
-
-                pnl_pct = float(
-                    pos.get("current_pnl", 0) or 0
-                )
+                entry_price = float(pos.get("entry_price", 0) or 0)
+                pnl_pct = float(pos.get("current_pnl", 0) or 0)
 
                 if data and data.get("price", 0) > 0:
                     current_price = float(data["price"])
@@ -474,14 +654,10 @@ class Simulator:
                     )
                     pos["no_price_misses"] = 0
 
-                    if pnl_pct > float(
-                        pos.get("max_gain_pct", 0) or 0
-                    ):
+                    if pnl_pct > float(pos.get("max_gain_pct", 0) or 0):
                         pos["max_gain_pct"] = round(pnl_pct, 2)
 
-                    if pnl_pct < float(
-                        pos.get("min_loss_pct", 0) or 0
-                    ):
+                    if pnl_pct < float(pos.get("min_loss_pct", 0) or 0):
                         pos["min_loss_pct"] = round(pnl_pct, 2)
 
                 else:
@@ -493,19 +669,13 @@ class Simulator:
                         pos["no_price_misses"]
                         >= self.SIM_EMERGENCY_NO_PRICE_MISSES
                     ):
-                        forced = max(
-                            min(
-                                pnl_pct,
-                                self.SIM_NO_PRICE_EXIT_PCT,
-                            ),
-                            self.SIM_NO_PRICE_EXIT_PCT,
-                        )
+                        forced = self.SIM_NO_PRICE_EXIT_PCT
 
                         logger.info(
                             f"🎮 🚨 SIM NO PRICE : "
                             f"${pos['symbol']} "
                             f"misses={pos['no_price_misses']} "
-                            f"forced={forced:+.1f}%"
+                            f"forced_ideal={forced:+.1f}%"
                         )
 
                         await self.simulate_sell(
@@ -521,32 +691,21 @@ class Simulator:
                     - float(pos.get("entry_time", time.time()))
                 ) / 60
 
-                max_gain = float(
-                    pos.get("max_gain_pct", 0) or 0
-                )
-
-                liquidity = float(
-                    pos.get("last_liquidity", 0) or 0
-                )
+                max_gain = float(pos.get("max_gain_pct", 0) or 0)
+                liquidity = float(pos.get("last_liquidity", 0) or 0)
 
                 # Emergency exit si liquidité quasi morte.
                 if (
                     liquidity <= self.SIM_MIN_LIQUIDITY_EXIT
                     and age_min > 2
                 ):
-                    forced = max(
-                        min(
-                            pnl_pct,
-                            self.SIM_LIQUIDITY_DROP_EXIT_PCT,
-                        ),
-                        self.SIM_LIQUIDITY_DROP_EXIT_PCT,
-                    )
+                    forced = self.SIM_LIQUIDITY_DROP_EXIT_PCT
 
                     logger.info(
                         f"🎮 🚨 SIM LIQ EXIT : "
                         f"${pos['symbol']} "
                         f"liq=${liquidity:,.0f} "
-                        f"forced={forced:+.1f}%"
+                        f"forced_ideal={forced:+.1f}%"
                     )
 
                     await self.simulate_sell(
@@ -557,7 +716,7 @@ class Simulator:
 
                     continue
 
-                # Early stop-loss pour éviter les rugs rapides.
+                # Early stop-loss.
                 if (
                     age_min <= self.SIM_EARLY_SL_MINUTES
                     and pnl_pct <= self.SIM_EARLY_SL_PCT
@@ -570,8 +729,8 @@ class Simulator:
                     logger.info(
                         f"🎮 ⚡ SIM EARLY SL : "
                         f"${pos['symbol']} "
-                        f"PnL {pnl_pct:+.1f}% "
-                        f"forced={forced:+.1f}%"
+                        f"PnL ideal {pnl_pct:+.1f}% "
+                        f"forced_ideal={forced:+.1f}%"
                     )
 
                     await self.simulate_sell(
@@ -591,9 +750,9 @@ class Simulator:
 
                     logger.info(
                         f"🎮 🛑 SIM SL : ${pos['symbol']} "
-                        f"PnL {pnl_pct:+.1f}% ≤ "
+                        f"PnL ideal {pnl_pct:+.1f}% ≤ "
                         f"{self.SIM_SL_PCT}% "
-                        f"forced={forced:+.1f}%"
+                        f"forced_ideal={forced:+.1f}%"
                     )
 
                     await self.simulate_sell(
@@ -604,14 +763,15 @@ class Simulator:
 
                     continue
 
-                # Trailing stop : protège un pump déjà monté.
+                # Trailing stop.
                 if (
                     max_gain >= self.SIM_TRAILING_ACTIVATE_PCT
-                    and (
-                        max_gain - pnl_pct
-                    ) >= self.SIM_TRAILING_GIVEBACK_PCT
+                    and (max_gain - pnl_pct) >= self.SIM_TRAILING_GIVEBACK_PCT
                 ):
-                    trailing_floor = max_gain - self.SIM_TRAILING_GIVEBACK_PCT
+                    trailing_floor = (
+                        max_gain
+                        - self.SIM_TRAILING_GIVEBACK_PCT
+                    )
 
                     forced = max(
                         pnl_pct,
@@ -623,7 +783,7 @@ class Simulator:
                         f"${pos['symbol']} "
                         f"max {max_gain:+.1f}% "
                         f"now {pnl_pct:+.1f}% "
-                        f"forced={forced:+.1f}%"
+                        f"forced_ideal={forced:+.1f}%"
                     )
 
                     await self.simulate_sell(
@@ -643,9 +803,9 @@ class Simulator:
 
                     logger.info(
                         f"🎮 🎯 SIM TP : ${pos['symbol']} "
-                        f"PnL {pnl_pct:+.1f}% ≥ "
+                        f"PnL ideal {pnl_pct:+.1f}% ≥ "
                         f"+{self.SIM_TP_PCT}% "
-                        f"forced={forced:+.1f}%"
+                        f"forced_ideal={forced:+.1f}%"
                     )
 
                     await self.simulate_sell(
@@ -663,7 +823,7 @@ class Simulator:
                     logger.info(
                         f"🎮 ⏰ SIM TIMEOUT : ${pos['symbol']} "
                         f"après {age_hours:.1f}h "
-                        f"PnL {pnl_pct:+.1f}%"
+                        f"PnL ideal {pnl_pct:+.1f}%"
                     )
 
                     await self.simulate_sell(
@@ -674,11 +834,8 @@ class Simulator:
                     continue
 
             except Exception as exc:
-                logger.debug(
-                    f"Sim check error {mint[:8]}: {exc}"
-                )
+                logger.debug(f"Sim check error {mint[:8]}: {exc}")
 
-            # Rate limiting entre appels API.
             await asyncio.sleep(0.5)
 
         self._save_data()
@@ -694,15 +851,9 @@ class Simulator:
                 - float(pos.get("entry_time", 0) or 0)
             ) / 3600
 
-            if age_hours > max(
-                self.SIM_MAX_AGE_HOURS * 1.5,
-                24,
-            ):
+            if age_hours > max(self.SIM_MAX_AGE_HOURS * 1.5, 24):
                 forced = max(
-                    float(
-                        pos.get("current_pnl", -50)
-                        or -50
-                    ),
+                    float(pos.get("current_pnl", -50) or -50),
                     -50.0,
                 )
 
@@ -745,32 +896,23 @@ class Simulator:
                 if not pairs:
                     return None
 
-                # Choisit la paire la plus liquide.
                 pair = max(
                     pairs,
                     key=lambda p: float(
-                        (p.get("liquidity") or {}).get(
-                            "usd",
-                            0,
-                        )
+                        (p.get("liquidity") or {}).get("usd", 0)
                         or 0
                     ),
                 )
 
                 return {
-                    "price": float(
-                        pair.get("priceUsd", 0) or 0
-                    ),
+                    "price": float(pair.get("priceUsd", 0) or 0),
                     "market_cap": float(
                         pair.get("marketCap", 0)
                         or pair.get("fdv", 0)
                         or 0
                     ),
                     "liquidity": float(
-                        (pair.get("liquidity") or {}).get(
-                            "usd",
-                            0,
-                        )
+                        (pair.get("liquidity") or {}).get("usd", 0)
                         or 0
                     ),
                 }
@@ -782,6 +924,42 @@ class Simulator:
     # STATISTIQUES
     # ════════════════════════════════════════
 
+    def _trade_realistic_pct(self, trade: dict) -> float:
+        return float(
+            trade.get(
+                "realistic_pnl_pct",
+                trade.get("pnl_pct", 0),
+            )
+            or 0
+        )
+
+    def _trade_realistic_eur(self, trade: dict) -> float:
+        return float(
+            trade.get(
+                "realistic_pnl_eur",
+                trade.get("pnl_eur", 0),
+            )
+            or 0
+        )
+
+    def _trade_ideal_pct(self, trade: dict) -> float:
+        return float(
+            trade.get(
+                "ideal_pnl_pct",
+                trade.get("pnl_pct", 0),
+            )
+            or 0
+        )
+
+    def _trade_ideal_eur(self, trade: dict) -> float:
+        return float(
+            trade.get(
+                "ideal_pnl_eur",
+                trade.get("pnl_eur", 0),
+            )
+            or 0
+        )
+
     def get_stats(self) -> dict:
         closed = [
             sim
@@ -789,22 +967,54 @@ class Simulator:
             if sim.get("closed")
         ]
 
-        wins = [
-            sim
+        realistic_pcts = [
+            self._trade_realistic_pct(sim)
             for sim in closed
-            if float(sim.get("pnl_pct", 0) or 0) > 0
+        ]
+
+        realistic_eurs = [
+            self._trade_realistic_eur(sim)
+            for sim in closed
+        ]
+
+        ideal_pcts = [
+            self._trade_ideal_pct(sim)
+            for sim in closed
+        ]
+
+        ideal_eurs = [
+            self._trade_ideal_eur(sim)
+            for sim in closed
+        ]
+
+        wins = [
+            pnl
+            for pnl in realistic_pcts
+            if pnl > 0
         ]
 
         losses = [
-            sim
-            for sim in closed
-            if float(sim.get("pnl_pct", 0) or 0) <= 0
+            pnl
+            for pnl in realistic_pcts
+            if pnl <= 0
+        ]
+
+        ideal_wins = [
+            pnl
+            for pnl in ideal_pcts
+            if pnl > 0
+        ]
+
+        ideal_losses = [
+            pnl
+            for pnl in ideal_pcts
+            if pnl <= 0
         ]
 
         big_losses = [
-            sim
-            for sim in closed
-            if float(sim.get("pnl_pct", 0) or 0) <= -30
+            pnl
+            for pnl in realistic_pcts
+            if pnl <= -30
         ]
 
         total_invested = (
@@ -812,19 +1022,29 @@ class Simulator:
             * self.SIMULATED_AMOUNT_EUR
         )
 
-        total_pnl = sum(
-            float(sim.get("pnl_eur", 0) or 0)
-            for sim in closed
-        )
+        realistic_total_pnl = sum(realistic_eurs)
+        ideal_total_pnl = sum(ideal_eurs)
 
-        roi = (
-            total_pnl / total_invested * 100
+        realistic_roi = (
+            realistic_total_pnl / total_invested * 100
             if total_invested > 0
             else 0
         )
 
-        win_rate = (
+        ideal_roi = (
+            ideal_total_pnl / total_invested * 100
+            if total_invested > 0
+            else 0
+        )
+
+        realistic_win_rate = (
             len(wins) / len(closed) * 100
+            if closed
+            else 0
+        )
+
+        ideal_win_rate = (
+            len(ideal_wins) / len(closed) * 100
             if closed
             else 0
         )
@@ -834,13 +1054,13 @@ class Simulator:
         week_ago = now - (7 * 86400)
 
         pnl_day = sum(
-            float(sim.get("pnl_eur", 0) or 0)
+            self._trade_realistic_eur(sim)
             for sim in closed
             if float(sim.get("exit_time", 0) or 0) >= day_ago
         )
 
         pnl_week = sum(
-            float(sim.get("pnl_eur", 0) or 0)
+            self._trade_realistic_eur(sim)
             for sim in closed
             if float(sim.get("exit_time", 0) or 0) >= week_ago
         )
@@ -848,9 +1068,7 @@ class Simulator:
         best_trade = (
             max(
                 closed,
-                key=lambda x: float(
-                    x.get("pnl_pct", 0) or 0
-                ),
+                key=lambda x: self._trade_realistic_pct(x),
             )
             if closed
             else None
@@ -859,9 +1077,7 @@ class Simulator:
         worst_trade = (
             min(
                 closed,
-                key=lambda x: float(
-                    x.get("pnl_pct", 0) or 0
-                ),
+                key=lambda x: self._trade_realistic_pct(x),
             )
             if closed
             else None
@@ -887,34 +1103,60 @@ class Simulator:
                 {
                     "count": 0,
                     "pnl": 0.0,
+                    "ideal_pnl": 0.0,
                 },
             )
 
             by_reason[reason]["count"] += 1
-            by_reason[reason]["pnl"] += float(
-                sim.get("pnl_eur", 0) or 0
-            )
+            by_reason[reason]["pnl"] += self._trade_realistic_eur(sim)
+            by_reason[reason]["ideal_pnl"] += self._trade_ideal_eur(sim)
 
         for value in by_reason.values():
             value["pnl"] = round(value["pnl"], 2)
+            value["ideal_pnl"] = round(value["ideal_pnl"], 2)
+
+        has_realistic = any(
+            "realistic_pnl_pct" in sim
+            for sim in closed
+        )
 
         return {
             "total_simulated": self.total_simulated,
             "open_positions": len(self.open_positions),
             "closed_positions": len(closed),
+
+            # Champs principaux = réalistes.
             "wins": len(wins),
             "losses": len(losses),
             "big_losses": len(big_losses),
-            "win_rate": round(win_rate, 1),
+            "win_rate": round(realistic_win_rate, 1),
             "total_invested": round(total_invested, 2),
-            "total_pnl": round(total_pnl, 2),
-            "roi_pct": round(roi, 1),
+            "total_pnl": round(realistic_total_pnl, 2),
+            "roi_pct": round(realistic_roi, 1),
             "pnl_day": round(pnl_day, 2),
             "pnl_week": round(pnl_week, 2),
+
+            # Champs réalistes explicites.
+            "realistic_wins": len(wins),
+            "realistic_losses": len(losses),
+            "realistic_win_rate": round(realistic_win_rate, 1),
+            "realistic_total_pnl": round(realistic_total_pnl, 2),
+            "realistic_roi_pct": round(realistic_roi, 1),
+
+            # Champs idéaux.
+            "ideal_wins": len(ideal_wins),
+            "ideal_losses": len(ideal_losses),
+            "ideal_win_rate": round(ideal_win_rate, 1),
+            "ideal_total_pnl": round(ideal_total_pnl, 2),
+            "ideal_roi_pct": round(ideal_roi, 1),
+
             "avg_duration_min": round(avg_duration, 1),
             "best_trade": best_trade,
             "worst_trade": worst_trade,
             "by_reason": by_reason,
+            "has_realistic": has_realistic,
+            "realistic_mode": bool(self.SIM_REALISTIC_MODE),
+
             "settings": {
                 "check_interval": self.CHECK_INTERVAL,
                 "sl_pct": self.SIM_SL_PCT,
@@ -926,6 +1168,13 @@ class Simulator:
                 "max_age_hours": self.SIM_MAX_AGE_HOURS,
                 "trailing_activate_pct": self.SIM_TRAILING_ACTIVATE_PCT,
                 "trailing_giveback_pct": self.SIM_TRAILING_GIVEBACK_PCT,
+                "realistic_mode": self.SIM_REALISTIC_MODE,
+                "buy_slippage_pct": self.SIM_BUY_SLIPPAGE_PCT,
+                "sell_slippage_pct": self.SIM_SELL_SLIPPAGE_PCT,
+                "dex_fee_pct": self.SIM_DEX_FEE_PCT,
+                "price_impact_pct": self.SIM_PRICE_IMPACT_PCT,
+                "execution_buffer_pct": self.SIM_EXECUTION_BUFFER_PCT,
+                "priority_fee_eur": self.SIM_PRIORITY_FEE_EUR,
             },
         }
 
@@ -944,9 +1193,7 @@ class Simulator:
 
         return sorted(
             closed,
-            key=lambda x: float(
-                x.get("exit_time", 0) or 0
-            ),
+            key=lambda x: float(x.get("exit_time", 0) or 0),
             reverse=True,
         )[:limit]
 
@@ -964,30 +1211,11 @@ class Simulator:
                 ) as f:
                     data = json.load(f)
 
-                self.open_positions = data.get(
-                    "open_positions",
-                    {},
-                )
-
-                self.simulations_history = data.get(
-                    "history",
-                    [],
-                )
-
-                self.total_simulated = data.get(
-                    "total_simulated",
-                    0,
-                )
-
-                self.total_closed = data.get(
-                    "total_closed",
-                    0,
-                )
-
-                self.total_pnl_eur = data.get(
-                    "total_pnl_eur",
-                    0,
-                )
+                self.open_positions = data.get("open_positions", {})
+                self.simulations_history = data.get("history", [])
+                self.total_simulated = data.get("total_simulated", 0)
+                self.total_closed = data.get("total_closed", 0)
+                self.total_pnl_eur = data.get("total_pnl_eur", 0)
 
                 logger.info(
                     f"🎮 Simulations chargées : "
@@ -1017,9 +1245,7 @@ class Simulator:
                         "total_simulated": self.total_simulated,
                         "total_closed": self.total_closed,
                         "total_pnl_eur": self.total_pnl_eur,
-                        "saved_at": datetime.now(
-                            timezone.utc
-                        ).isoformat(),
+                        "saved_at": datetime.now(timezone.utc).isoformat(),
                     },
                     f,
                     indent=2,
